@@ -1,0 +1,30 @@
+{
+  "summary": "Backend-only testing for SignBridge AI completed. 15/15 pytest tests passed covering health, phrases (14 entries seeded), conversations/messages CRUD with message_count increment, Gemini-powered voice-to-sign + sign-to-voice translation, ElevenLabs TTS proxy (upstream 401 as expected, properly wrapped), sign detection logging, feedback, and Snowflake-style analytics. No MongoDB _id leaks observed in any response.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/tts/speak", "issue": "ElevenLabs returns 401 'detected_unusual_activity' from cloud IPs (EXPECTED per user choice). Backend correctly wraps upstream error in HTTPException JSON. Frontend SpeechSynthesis fallback handles this. NOT a bug."}
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_signbridge.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py uses deprecated FastAPI @app.on_event('startup'/'shutdown'); migrate to lifespan context manager (non-blocking, low priority).",
+    "_match_signs() does substring matching on label/key — acceptable for MVP but may produce false positives for short tokens (e.g., 'no' matched in 'know'). Consider word-boundary regex.",
+    "tts/speak passes upstream raw error text into HTTPException detail (truncated to 200 chars). Acceptable; logs full error.",
+    "All endpoints return clean JSON without Mongo _id (uses projection {_id:0}). Good practice.",
+    "Single 525-line server.py is within file-size guideline but approaching split threshold; consider splitting routes/services if it grows."
+  ],
+  "updated_files": ["/app/backend/tests/test_signbridge.py"],
+  "success_rate": {"backend": "100%", "frontend": "not tested (skipped per request)"},
+  "test_credentials": "none required",
+  "seed_data_creation": "Phrase catalog auto-seeds 14 entries on backend startup. Tests created TEST_-prefixed conversations/messages/feedback rows in MongoDB (not auto-cleaned).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend tests live in /app/backend/tests/test_signbridge.py and are pytest-based. ElevenLabs TTS will return 401 from this datacenter — that's expected and the test allows non-2xx as long as the proxy wraps it. Gemini calls cost 1-3s each; tests use 60s timeouts. BASE_URL is read from REACT_APP_BACKEND_URL.",
+  "rca of the issue": "N/A - no bugs found"
+}

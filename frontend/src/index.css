@@ -1,115 +1,101 @@
+@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@200;300;400;500;600;700&family=Work+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-body {
-    margin: 0;
-    font-family:
-        -apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto", "Oxygen",
-        "Ubuntu", "Cantarell", "Fira Sans", "Droid Sans", "Helvetica Neue",
-        sans-serif;
+@layer base {
+  :root {
+    --background: 44 30% 95%;
+    --foreground: 150 10% 13%;
+    --card: 0 0% 100%;
+    --card-foreground: 150 10% 13%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 150 10% 13%;
+    --primary: 146 33% 27%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 39 27% 87%;
+    --secondary-foreground: 150 10% 13%;
+    --muted: 39 27% 87%;
+    --muted-foreground: 145 8% 39%;
+    --accent: 39 27% 87%;
+    --accent-foreground: 150 10% 13%;
+    --destructive: 7 47% 48%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 38 21% 82%;
+    --input: 38 21% 82%;
+    --ring: 146 33% 27%;
+    --chart-1: 146 33% 27%;
+    --chart-2: 28 60% 55%;
+    --chart-3: 7 47% 48%;
+    --chart-4: 200 30% 45%;
+    --chart-5: 50 40% 55%;
+    --radius: 0.75rem;
+  }
+}
+
+@layer base {
+  * { @apply border-border; }
+  html, body, #root { height: 100%; }
+  body {
+    @apply bg-background text-foreground;
+    font-family: 'Work Sans', sans-serif;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+  }
+  h1, h2, h3, h4, h5 {
+    font-family: 'Manrope', sans-serif;
+    letter-spacing: -0.015em;
+  }
+  ::selection { background: #2E5A44; color: #fff; }
 }
 
-code {
-    font-family:
-        source-code-pro, Menlo, Monaco, Consolas, "Courier New", monospace;
-}
-
-@layer base {
-    :root {
-        --background: 0 0% 100%;
-        --foreground: 0 0% 3.9%;
-        --card: 0 0% 100%;
-        --card-foreground: 0 0% 3.9%;
-        --popover: 0 0% 100%;
-        --popover-foreground: 0 0% 3.9%;
-        --primary: 0 0% 9%;
-        --primary-foreground: 0 0% 98%;
-        --secondary: 0 0% 96.1%;
-        --secondary-foreground: 0 0% 9%;
-        --muted: 0 0% 96.1%;
-        --muted-foreground: 0 0% 45.1%;
-        --accent: 0 0% 96.1%;
-        --accent-foreground: 0 0% 9%;
-        --destructive: 0 84.2% 60.2%;
-        --destructive-foreground: 0 0% 98%;
-        --border: 0 0% 89.8%;
-        --input: 0 0% 89.8%;
-        --ring: 0 0% 3.9%;
-        --chart-1: 12 76% 61%;
-        --chart-2: 173 58% 39%;
-        --chart-3: 197 37% 24%;
-        --chart-4: 43 74% 66%;
-        --chart-5: 27 87% 67%;
-        --radius: 0.5rem;
-    }
-    .dark {
-        --background: 0 0% 3.9%;
-        --foreground: 0 0% 98%;
-        --card: 0 0% 3.9%;
-        --card-foreground: 0 0% 98%;
-        --popover: 0 0% 3.9%;
-        --popover-foreground: 0 0% 98%;
-        --primary: 0 0% 98%;
-        --primary-foreground: 0 0% 9%;
-        --secondary: 0 0% 14.9%;
-        --secondary-foreground: 0 0% 98%;
-        --muted: 0 0% 14.9%;
-        --muted-foreground: 0 0% 63.9%;
-        --accent: 0 0% 14.9%;
-        --accent-foreground: 0 0% 98%;
-        --destructive: 0 62.8% 30.6%;
-        --destructive-foreground: 0 0% 98%;
-        --border: 0 0% 14.9%;
-        --input: 0 0% 14.9%;
-        --ring: 0 0% 83.1%;
-        --chart-1: 220 70% 50%;
-        --chart-2: 160 60% 45%;
-        --chart-3: 30 80% 55%;
-        --chart-4: 280 65% 60%;
-        --chart-5: 340 75% 55%;
-    }
-}
-
-@layer base {
-    * {
-        @apply border-border;
-    }
-    body {
-        @apply bg-background text-foreground;
-    }
-}
-
-@layer base {
-    [data-debug-wrapper="true"] {
-        display: contents !important;
-    }
-
-    [data-debug-wrapper="true"] > * {
-        margin-left: inherit;
-        margin-right: inherit;
-        margin-top: inherit;
-        margin-bottom: inherit;
-        padding-left: inherit;
-        padding-right: inherit;
-        padding-top: inherit;
-        padding-bottom: inherit;
-        column-gap: inherit;
-        row-gap: inherit;
-        gap: inherit;
-        border-left-width: inherit;
-        border-right-width: inherit;
-        border-top-width: inherit;
-        border-bottom-width: inherit;
-        border-left-style: inherit;
-        border-right-style: inherit;
-        border-top-style: inherit;
-        border-bottom-style: inherit;
-        border-left-color: inherit;
-        border-right-color: inherit;
-        border-top-color: inherit;
-        border-bottom-color: inherit;
-    }
+@layer utilities {
+  .font-display { font-family: 'Manrope', sans-serif; }
+  .font-body { font-family: 'Work Sans', sans-serif; }
+  .font-mono-ui { font-family: 'JetBrains Mono', monospace; }
+  .grain {
+    position: relative;
+  }
+  .grain::after {
+    content: "";
+    position: absolute; inset: 0;
+    pointer-events: none;
+    background-image: radial-gradient(rgba(31,36,33,0.05) 1px, transparent 1px);
+    background-size: 3px 3px;
+    mix-blend-mode: multiply;
+    opacity: 0.5;
+  }
+  .glass {
+    background: rgba(247, 245, 240, 0.78);
+    backdrop-filter: blur(18px) saturate(160%);
+    -webkit-backdrop-filter: blur(18px) saturate(160%);
+    border-bottom: 1px solid rgba(220, 213, 201, 0.6);
+  }
+  .ring-focus { @apply outline-none focus-visible:ring-2 focus-visible:ring-[#2E5A44] focus-visible:ring-offset-2 focus-visible:ring-offset-[#F7F5F0]; }
+  .clay-card {
+    background: #ffffff;
+    border: 1px solid #DCD5C9;
+    box-shadow: 0 1px 0 rgba(255,255,255,0.9) inset, 0 8px 24px -16px rgba(31,36,33,0.18);
+  }
+  .pulse-ring::before {
+    content: "";
+    position: absolute; inset: -6px;
+    border-radius: 9999px;
+    border: 2px solid #2E5A44;
+    animation: pulseRing 1.6s ease-out infinite;
+  }
+  @keyframes pulseRing {
+    0% { transform: scale(0.85); opacity: 0.6; }
+    100% { transform: scale(1.4); opacity: 0; }
+  }
+  .fade-in-up { animation: fadeInUp 0.55s ease-out both; }
+  @keyframes fadeInUp {
+    from { opacity: 0; transform: translate3d(0, 14px, 0); }
+    to { opacity: 1; transform: translate3d(0, 0, 0); }
+  }
+  .marquee-line {
+    background: linear-gradient(90deg, transparent, #2E5A44 40%, #2E5A44 60%, transparent);
+    height: 1px;
+  }
 }
