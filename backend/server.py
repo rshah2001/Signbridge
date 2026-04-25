@@ -9,21 +9,21 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import random
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import quote
 
 import httpx
 from dotenv import load_dotenv
 from fastapi import APIRouter, FastAPI, HTTPException
 from fastapi.responses import Response
 from motor.motor_asyncio import AsyncIOMotorClient
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict
 from starlette.middleware.cors import CORSMiddleware
-
-from emergentintegrations.llm.chat import LlmChat, UserMessage
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
@@ -31,11 +31,15 @@ load_dotenv(ROOT_DIR / ".env")
 # ---------------------------------------------------------------------------
 # Bootstrapping
 # ---------------------------------------------------------------------------
-mongo_url = os.environ["MONGO_URL"]
-client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ["DB_NAME"]]
+mongo_url = os.environ.get("MONGO_URL", "mongodb://localhost:27017")
+client = AsyncIOMotorClient(mongo_url, serverSelectionTimeoutMS=2000)
+db = client[os.environ.get("DB_NAME", "signbridge")]
 
-EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY", "")
+GEMINI_API_KEY = (
+    os.environ.get("GEMINI_API_KEY", "")
+    or os.environ.get("GOOGLE_API_KEY", "")
+    or os.environ.get("LLM_API_KEY", "")
+)
 ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY", "")
 ELEVENLABS_DEFAULT_VOICE = "EXAVITQu4vr4xnSDxMaL"  # Rachel-like, multilingual
 
@@ -45,55 +49,191 @@ api = APIRouter(prefix="/api")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("signbridge")
 
+memory_store: Dict[str, Any] = {
+    "phrase_mappings": [],
+    "conversations": [],
+    "messages": [],
+    "detected_signs": [],
+    "feedback_corrections": [],
+}
+
+SIGN_STOPWORDS = {
+    "a", "an", "the", "is", "am", "are", "was", "were", "be", "been", "being",
+    "do", "does", "did", "have", "has", "had", "to", "for", "of", "in", "on",
+    "at", "by", "with", "from", "it", "its", "this", "that",
+}
+
+
+def _memory_index(name: str, key: str = "id") -> Dict[str, Dict[str, Any]]:
+    return {item[key]: item for item in memory_store[name] if key in item}
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _use_memory_store() -> bool:
+    return bool(getattr(app.state, "use_memory_store", False))
+
+
+async def _check_mongo() -> tuple[bool, Optional[str]]:
+    try:
+        await client.admin.command("ping")
+        return True, None
+    except Exception as exc:  # pragma: no cover - network
+        return False, str(exc)
+
+
+async def refresh_service_status() -> Dict[str, Any]:
+    mongo_ok, mongo_error = await _check_mongo()
+    force_memory = os.environ.get("SIGNBRIDGE_USE_MEMORY_STORE", "").lower() in {"1", "true", "yes"}
+    app.state.use_memory_store = force_memory or not mongo_ok
+    status = {
+        "app": "SignBridge AI",
+        "status": "degraded" if app.state.use_memory_store else "ok",
+        "mode": "memory" if app.state.use_memory_store else "mongo",
+        "services": {
+            "database": {
+                "ok": mongo_ok and not app.state.use_memory_store,
+                "mode": "memory" if app.state.use_memory_store else "mongo",
+                "detail": "Using in-memory fallback store." if app.state.use_memory_store else "MongoDB connected.",
+                "error": None if mongo_ok else mongo_error,
+            },
+            "llm": {
+                "ok": bool(GEMINI_API_KEY),
+                "detail": "Gemini API configured." if GEMINI_API_KEY else "Running local heuristic fallback.",
+            },
+            "tts": {
+                "ok": bool(ELEVENLABS_API_KEY),
+                "detail": "ElevenLabs configured." if ELEVENLABS_API_KEY else "Browser speech synthesis fallback only.",
+            },
+        },
+        "generated_at": _now(),
+    }
+    app.state.service_status = status
+    return status
+
+
+def _memory_collection(name: str) -> List[Dict[str, Any]]:
+    return memory_store[name]
+
+
+async def _count_documents(name: str) -> int:
+    if _use_memory_store():
+        return len(_memory_collection(name))
+    return await getattr(db, name).count_documents({})
+
+
 # ---------------------------------------------------------------------------
-# Phrase catalog (MVP signs)
+def _video_path(asset_name: Optional[str]) -> Optional[str]:
+    if not asset_name:
+        return None
+    return f"/sign-videos/{quote(asset_name)}.mp4"
+
+
+def _phrase(
+    key: str,
+    label: str,
+    icon: str,
+    category: str,
+    description: str,
+    *,
+    emergency: bool = False,
+    video_asset: Optional[str] = None,
+) -> Dict[str, Any]:
+    return {
+        "key": key,
+        "label": label,
+        "icon": icon,
+        "category": category,
+        "emergency": emergency,
+        "description": description,
+        "video_asset": video_asset,
+        "video_path": _video_path(video_asset),
+    }
+
+
+# Phrase catalog backed by the imported ASL clip library.
 # ---------------------------------------------------------------------------
 PHRASE_CATALOG: List[Dict[str, Any]] = [
-    {"key": "hello", "label": "Hello", "icon": "Hand", "category": "greeting", "emergency": False, "description": "Open palm waving"},
-    {"key": "thank_you", "label": "Thank you", "icon": "Heart", "category": "greeting", "emergency": False, "description": "Fingertips from chin moving forward"},
-    {"key": "yes", "label": "Yes", "icon": "Check", "category": "answer", "emergency": False, "description": "Closed fist nodding"},
-    {"key": "no", "label": "No", "icon": "X", "category": "answer", "emergency": False, "description": "Index + middle finger to thumb, snap"},
-    {"key": "help", "label": "Help", "icon": "LifeBuoy", "category": "request", "emergency": True, "description": "Closed fist on flat palm, lift up"},
-    {"key": "water", "label": "Water", "icon": "Droplets", "category": "need", "emergency": False, "description": "W-hand at chin"},
-    {"key": "bathroom", "label": "Bathroom", "icon": "DoorOpen", "category": "need", "emergency": False, "description": "T-hand shake"},
-    {"key": "doctor", "label": "Doctor", "icon": "Stethoscope", "category": "need", "emergency": True, "description": "D-hand on wrist"},
-    {"key": "emergency", "label": "Emergency", "icon": "Siren", "category": "alert", "emergency": True, "description": "E-hand shake urgent"},
-    {"key": "pain", "label": "Pain", "icon": "Zap", "category": "feeling", "emergency": True, "description": "Index fingers point inward"},
-    {"key": "stop", "label": "Stop", "icon": "OctagonAlert", "category": "command", "emergency": False, "description": "Side palm hits flat palm"},
-    {"key": "please", "label": "Please", "icon": "Sparkles", "category": "greeting", "emergency": False, "description": "Flat palm circles on chest"},
-    {"key": "hungry", "label": "Hungry", "icon": "Apple", "category": "need", "emergency": False, "description": "C-hand sweeps down chest"},
-    {"key": "i_love_you", "label": "I love you", "icon": "HeartHandshake", "category": "feeling", "emergency": False, "description": "ILY combined handshape"},
-    {"key": "sorry", "label": "Sorry", "icon": "HandHeart", "category": "feeling", "emergency": False, "description": "A-hand fist circling on chest"},
+    _phrase("help", "Help", "LifeBuoy", "alert", "Request urgent assistance quickly.", emergency=True, video_asset="Help"),
+    _phrase("safe", "Safe", "ShieldCheck", "alert", "Confirm safety or ask whether someone is safe.", emergency=True, video_asset="Safe"),
+    _phrase("fight", "Fight", "ShieldAlert", "alert", "Warn about danger or conflict.", emergency=True, video_asset="Fight"),
+    _phrase("do_not", "Do Not", "OctagonAlert", "alert", "Urgent stop or refusal phrase.", emergency=True, video_asset="Do Not"),
+    _phrase("hello", "Hello", "Hand", "greeting", "Start a conversation warmly.", video_asset="Hello"),
+    _phrase("thank_you", "Thank you", "Heart", "greeting", "Express gratitude politely.", video_asset="Thank You"),
+    _phrase("welcome", "Welcome", "DoorOpen", "greeting", "Invite someone in or greet arrival.", video_asset="Welcome"),
+    _phrase("good", "Good", "BadgeCheck", "greeting", "Positive acknowledgement or response.", video_asset="Good"),
+    _phrase("happy", "Happy", "Smile", "feeling", "Share positive emotion.", video_asset="Happy"),
+    _phrase("sad", "Sad", "CloudRain", "feeling", "Share sadness or concern.", video_asset="Sad"),
+    _phrase("more", "More", "Plus", "request", "Ask for more of something.", video_asset="More"),
+    _phrase("again", "Again", "RotateCw", "request", "Ask to repeat.", video_asset="Again"),
+    _phrase("please_repeat", "Again", "RefreshCcw", "request", "Repeat or say it once more.", video_asset="Again"),
+    _phrase("now", "Now", "Clock3", "time", "Express immediacy.", video_asset="Now"),
+    _phrase("before", "Before", "Rewind", "time", "Reference something earlier.", video_asset="Before"),
+    _phrase("after", "After", "FastForward", "time", "Reference something later.", video_asset="After"),
+    _phrase("name", "Name", "BadgeInfo", "identity", "Ask or share a name.", video_asset="Name"),
+    _phrase("me", "Me", "User", "identity", "Refer to self.", video_asset="ME"),
+    _phrase("my", "My", "UserRound", "identity", "Show possession or ownership.", video_asset="My"),
+    _phrase("you", "You", "Users", "identity", "Refer to another person.", video_asset="You"),
+    _phrase("we", "We", "UsersRound", "identity", "Refer to a group including self.", video_asset="We"),
+    _phrase("our", "Our", "Home", "identity", "Show shared ownership.", video_asset="Our"),
+    _phrase("home", "Home", "House", "place", "Talk about going or staying home.", video_asset="Home"),
+    _phrase("where", "Where", "MapPin", "question", "Ask about location.", video_asset="Where"),
+    _phrase("what", "What", "CircleHelp", "question", "Ask what something is.", video_asset="What"),
+    _phrase("who", "Who", "Contact", "question", "Ask who a person is.", video_asset="Who"),
+    _phrase("why", "Why", "MessageCircleQuestion", "question", "Ask for a reason.", video_asset="Why"),
+    _phrase("when", "When", "CalendarClock", "question", "Ask about time.", video_asset="When"),
+    _phrase("how", "How", "HelpCircle", "question", "Ask how something works or feels.", video_asset="How"),
+    _phrase("can", "Can", "CircleCheckBig", "answer", "Express ability or permission.", video_asset="Can"),
+    _phrase("cannot", "Cannot", "CircleSlash", "answer", "Express inability or refusal.", video_asset="Cannot"),
+    _phrase("right", "Right", "ArrowRight", "answer", "Confirm correctness or direction.", video_asset="Right"),
+    _phrase("wrong", "Wrong", "BadgeX", "answer", "Mark something incorrect.", video_asset="Wrong"),
+    _phrase("go", "Go", "MoveRight", "action", "Indicate movement or departure.", video_asset="Go"),
+    _phrase("come", "Come", "MoveLeft", "action", "Invite someone closer.", video_asset="Come"),
+    _phrase("eat", "Eat", "Utensils", "need", "Talk about eating or meals.", video_asset="Eat"),
+    _phrase("talk", "Talk", "MessagesSquare", "communication", "Start or continue conversation.", video_asset="Talk"),
+    _phrase("sign", "Sign", "HandMetal", "communication", "Refer to signing or sign language.", video_asset="Sign"),
+    _phrase("language", "Language", "Languages", "communication", "Refer to language itself.", video_asset="Language"),
+    _phrase("learn", "Learn", "GraduationCap", "education", "Talk about learning.", video_asset="Learn"),
+    _phrase("study", "Study", "BookOpen", "education", "Talk about studying.", video_asset="Study"),
+    _phrase("work", "Work", "BriefcaseBusiness", "activity", "Talk about work or tasks.", video_asset="Work"),
+    _phrase("change", "Change", "RefreshCw", "activity", "Ask for or describe change.", video_asset="Change"),
+    _phrase("stay", "Stay", "MapPinned", "activity", "Ask someone to remain.", video_asset="Stay"),
+    _phrase("walk", "Walk", "Footprints", "activity", "Talk about walking or moving.", video_asset="Walk"),
 ]
 
 
 async def seed_phrases() -> None:
-    existing_keys = {d.get("key") async for d in db.phrase_mappings.find({}, {"_id": 0, "key": 1})}
+    docs = [{**p, "id": str(uuid.uuid4()), "created_at": _now()} for p in PHRASE_CATALOG]
     catalog_keys = {p["key"] for p in PHRASE_CATALOG}
+
+    if _use_memory_store():
+        existing_keys = {d.get("key") for d in memory_store["phrase_mappings"]}
+        if existing_keys == catalog_keys:
+            return
+        memory_store["phrase_mappings"] = docs
+        logger.info("Seeded %d phrase mappings into memory store", len(docs))
+        return
+
+    existing_keys = {d.get("key") async for d in db.phrase_mappings.find({}, {"_id": 0, "key": 1})}
     if existing_keys == catalog_keys:
         return
     await db.phrase_mappings.delete_many({})
-    docs = [
-        {**p, "id": str(uuid.uuid4()), "created_at": _now()}
-        for p in PHRASE_CATALOG
-    ]
     await db.phrase_mappings.insert_many(docs)
-    logger.info("Seeded %d phrase mappings", len(docs))
+    logger.info("Seeded %d phrase mappings into MongoDB", len(docs))
 
 
 @app.on_event("startup")
 async def on_startup() -> None:
+    await refresh_service_status()
     await seed_phrases()
 
 
 @app.on_event("shutdown")
 async def on_shutdown() -> None:
-    client.close()
+    if not _use_memory_store():
+        client.close()
 
 
 # ---------------------------------------------------------------------------
@@ -181,27 +321,187 @@ class FeedbackIn(BaseModel):
 # Gemini helpers
 # ---------------------------------------------------------------------------
 async def gemini_chat(system: str, prompt: str, session: str = "default") -> str:
-    if not EMERGENT_LLM_KEY:
-        raise HTTPException(500, "EMERGENT_LLM_KEY not configured")
-    chat = LlmChat(
-        api_key=EMERGENT_LLM_KEY,
-        session_id=session,
-        system_message=system,
-    ).with_model("gemini", "gemini-2.5-flash")
-    try:
-        return await chat.send_message(UserMessage(text=prompt))
-    except Exception as exc:  # pragma: no cover - network
-        logger.exception("Gemini error")
-        raise HTTPException(502, f"Gemini error: {exc}") from exc
+    if GEMINI_API_KEY:
+        url = (
+            "https://generativelanguage.googleapis.com/v1beta/models/"
+            f"gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
+        )
+        payload = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "systemInstruction": {"parts": [{"text": system}]},
+            "generationConfig": {"temperature": 0.3},
+        }
+        try:
+            async with httpx.AsyncClient(timeout=30) as http:
+                resp = await http.post(url, json=payload)
+            resp.raise_for_status()
+            body = resp.json()
+            return body["candidates"][0]["content"]["parts"][0]["text"]
+        except Exception as exc:  # pragma: no cover - network
+            logger.warning("Gemini request failed for session %s: %s", session, exc)
+
+    # Keep the demo functional even when external LLM keys are unavailable.
+    text = " ".join(prompt.strip().split())
+    if session == "v2s":
+        lowered = text.lower()
+        matches = [p["label"] for p in PHRASE_CATALOG if p["label"].lower() in lowered or p["key"].replace("_", " ") in lowered]
+        if matches:
+            return ", ".join(matches[:4])
+        words = [w.strip(".,!?") for w in lowered.split() if w.strip(".,!?")]
+        return " ".join(words[:8]) or "help"
+
+    labels = [chunk.strip() for chunk in text.split(":")[-1].split("|") if chunk.strip()]
+    if labels:
+        sentence = " ".join(labels)
+        return f"I need {sentence.lower()}."
+    return "I need help."
 
 
 def _match_signs(simplified: str) -> List[Dict[str, Any]]:
     text = simplified.lower()
     matches: List[Dict[str, Any]] = []
     for phrase in PHRASE_CATALOG:
-        if phrase["label"].lower() in text or phrase["key"].replace("_", " ") in text:
+        label_pattern = rf"\b{re.escape(phrase['label'].lower())}\b"
+        key_pattern = rf"\b{re.escape(phrase['key'].replace('_', ' '))}\b"
+        if re.search(label_pattern, text) or re.search(key_pattern, text):
             matches.append(phrase)
     return matches
+
+
+def _catalog_lookup(fragment: str) -> Optional[Dict[str, Any]]:
+    normalized = fragment.strip().lower()
+    if not normalized:
+        return None
+
+    for phrase in PHRASE_CATALOG:
+        if normalized in {
+            phrase["key"],
+            phrase["label"].lower(),
+            (phrase.get("video_asset") or "").lower(),
+            phrase["key"].replace("_", " "),
+        }:
+            return phrase
+    return None
+
+
+def _prepare_sign_playback_text(text: str) -> str:
+    words = re.findall(r"[A-Za-z0-9']+", text)
+    if not words:
+        return "help"
+
+    lowered = [word.lower() for word in words]
+    prepared: List[str] = []
+
+    has_past = any(word in {"was", "were", "did", "had"} or word.endswith("ed") for word in lowered)
+    has_future = "will" in lowered or ("going" in lowered and "to" in lowered)
+    has_present_continuous = any(word.endswith("ing") for word in lowered)
+
+    if has_past:
+        prepared.append("before")
+    elif has_future:
+        prepared.append("will")
+    elif has_present_continuous:
+        prepared.append("now")
+
+    replacements = {"i": "me"}
+    for original, lowered_word in zip(words, lowered):
+        candidate = replacements.get(lowered_word, lowered_word)
+        if candidate in SIGN_STOPWORDS and candidate not in {"before", "will", "now"}:
+            continue
+        prepared.append(candidate)
+
+    return " ".join(prepared[:12]) or "help"
+
+
+def _playback_tokens_from_text(text: str) -> List[str]:
+    prepared_text = _prepare_sign_playback_text(text)
+    words = re.findall(r"[A-Za-z0-9']+", prepared_text.lower())
+    if not words:
+        return ["help"]
+
+    replacements = {"i": "me"}
+    normalized_words = [replacements.get(word, word) for word in words]
+    tokens: List[str] = []
+    index = 0
+
+    while index < len(normalized_words):
+        current = normalized_words[index]
+        next_word = normalized_words[index + 1] if index + 1 < len(normalized_words) else None
+        pair = f"{current} {next_word}" if next_word else None
+
+        if pair:
+            phrase = _catalog_lookup(pair)
+            if phrase:
+                tokens.append(phrase["key"])
+                index += 2
+                continue
+
+        phrase = _catalog_lookup(current)
+        if phrase:
+            tokens.append(phrase["key"])
+        else:
+            tokens.extend(ch.lower() for ch in current if ch.isalnum())
+        index += 1
+
+    return tokens[:24] or ["help"]
+
+
+async def list_phrase_docs() -> List[Dict[str, Any]]:
+    if _use_memory_store():
+        return [dict(doc) for doc in memory_store["phrase_mappings"]]
+    return await db.phrase_mappings.find({}, {"_id": 0}).to_list(200)
+
+
+async def create_conversation_doc(convo: Dict[str, Any]) -> None:
+    if _use_memory_store():
+        memory_store["conversations"].append(convo.copy())
+        return
+    await db.conversations.insert_one(convo.copy())
+
+
+async def list_conversation_docs() -> List[Dict[str, Any]]:
+    if _use_memory_store():
+        return sorted(memory_store["conversations"], key=lambda item: item["created_at"], reverse=True)[:50]
+    return await db.conversations.find({}, {"_id": 0}).sort("created_at", -1).to_list(50)
+
+
+async def get_conversation_doc(convo_id: str) -> Optional[Dict[str, Any]]:
+    if _use_memory_store():
+        return _memory_index("conversations").get(convo_id)
+    return await db.conversations.find_one({"id": convo_id}, {"_id": 0})
+
+
+async def list_message_docs(convo_id: str) -> List[Dict[str, Any]]:
+    if _use_memory_store():
+        return [m for m in memory_store["messages"] if m["conversation_id"] == convo_id]
+    return await db.messages.find({"conversation_id": convo_id}, {"_id": 0}).sort("created_at", 1).to_list(500)
+
+
+async def create_message_doc(msg: Dict[str, Any]) -> None:
+    if _use_memory_store():
+        memory_store["messages"].append(msg.copy())
+        convo = _memory_index("conversations").get(msg["conversation_id"])
+        if convo:
+            convo["message_count"] = int(convo.get("message_count", 0)) + 1
+        return
+    await db.messages.insert_one(msg.copy())
+    await db.conversations.update_one({"id": msg["conversation_id"]}, {"$inc": {"message_count": 1}})
+
+
+async def log_detected_signs(docs: List[Dict[str, Any]]) -> None:
+    if not docs:
+        return
+    if _use_memory_store():
+        memory_store["detected_signs"].extend(doc.copy() for doc in docs)
+        return
+    await db.detected_signs.insert_many(docs)
+
+
+async def save_feedback_doc(doc: Dict[str, Any]) -> None:
+    if _use_memory_store():
+        memory_store["feedback_corrections"].append(doc.copy())
+        return
+    await db.feedback_corrections.insert_one(doc.copy())
 
 
 # ---------------------------------------------------------------------------
@@ -212,10 +512,14 @@ async def root() -> Dict[str, str]:
     return {"app": "SignBridge AI", "status": "ok"}
 
 
+@api.get("/health")
+async def health() -> Dict[str, Any]:
+    return await refresh_service_status()
+
+
 @api.get("/phrases")
 async def list_phrases() -> List[Dict[str, Any]]:
-    docs = await db.phrase_mappings.find({}, {"_id": 0}).to_list(200)
-    return docs
+    return await list_phrase_docs()
 
 
 @api.post("/conversations", response_model=Conversation)
@@ -228,28 +532,28 @@ async def create_conversation(payload: ConversationCreate) -> Conversation:
         "created_at": _now(),
         "message_count": 0,
     }
-    await db.conversations.insert_one(convo.copy())
+    await create_conversation_doc(convo)
     return Conversation(**convo)
 
 
 @api.get("/conversations", response_model=List[Conversation])
 async def list_conversations() -> List[Conversation]:
-    docs = await db.conversations.find({}, {"_id": 0}).sort("created_at", -1).to_list(50)
+    docs = await list_conversation_docs()
     return [Conversation(**d) for d in docs]
 
 
 @api.get("/conversations/{convo_id}")
 async def get_conversation(convo_id: str) -> Dict[str, Any]:
-    convo = await db.conversations.find_one({"id": convo_id}, {"_id": 0})
+    convo = await get_conversation_doc(convo_id)
     if not convo:
         raise HTTPException(404, "conversation not found")
-    msgs = await db.messages.find({"conversation_id": convo_id}, {"_id": 0}).sort("created_at", 1).to_list(500)
+    msgs = await list_message_docs(convo_id)
     return {"conversation": convo, "messages": msgs}
 
 
 @api.post("/conversations/{convo_id}/messages", response_model=Message)
 async def add_message(convo_id: str, payload: MessageCreate) -> Message:
-    convo = await db.conversations.find_one({"id": convo_id}, {"_id": 0})
+    convo = await get_conversation_doc(convo_id)
     if not convo:
         raise HTTPException(404, "conversation not found")
     msg = {
@@ -262,8 +566,7 @@ async def add_message(convo_id: str, payload: MessageCreate) -> Message:
         "confidence": payload.confidence,
         "created_at": _now(),
     }
-    await db.messages.insert_one(msg.copy())
-    await db.conversations.update_one({"id": convo_id}, {"$inc": {"message_count": 1}})
+    await create_message_doc(msg)
     return Message(**msg)
 
 
@@ -282,15 +585,13 @@ async def voice_to_sign(payload: TranslateVoiceToSignIn) -> TranslateVoiceToSign
     )
     simplified = (await gemini_chat(system, text, session="v2s")).strip()
     simplified = simplified.replace("\n", " ").strip(' "')
-    matches = _match_signs(simplified)
-    sign_tokens = [m["key"] for m in matches]
-    if not sign_tokens:
-        # fallback: first 5 significant words become finger-spelled tokens
-        sign_tokens = [w.lower() for w in simplified.split() if len(w) > 1][:5]
+    playback_text = _prepare_sign_playback_text(simplified)
+    matches = _match_signs(playback_text)
+    sign_tokens = _playback_tokens_from_text(playback_text)
 
     return TranslateVoiceToSignOut(
         original=text,
-        simplified=simplified,
+        simplified=playback_text,
         sign_tokens=sign_tokens,
         matched_phrases=matches,
     )
@@ -325,8 +626,7 @@ async def sign_to_voice(payload: TranslateSignToVoiceIn) -> TranslateSignToVoice
         }
         for k in payload.sign_tokens
     ]
-    if docs:
-        await db.detected_signs.insert_many(docs)
+    await log_detected_signs(docs)
 
     return TranslateSignToVoiceOut(
         sign_tokens=payload.sign_tokens,
@@ -364,7 +664,7 @@ async def log_sign(payload: DetectedSignIn) -> Dict[str, str]:
     doc = payload.model_dump()
     doc["id"] = str(uuid.uuid4())
     doc["created_at"] = _now()
-    await db.detected_signs.insert_one(doc.copy())
+    await log_detected_signs([doc])
     return {"id": doc["id"], "status": "logged"}
 
 
@@ -373,7 +673,7 @@ async def submit_feedback(payload: FeedbackIn) -> Dict[str, str]:
     doc = payload.model_dump()
     doc["id"] = str(uuid.uuid4())
     doc["created_at"] = _now()
-    await db.feedback_corrections.insert_one(doc.copy())
+    await save_feedback_doc(doc)
     return {"id": doc["id"], "status": "saved"}
 
 
@@ -381,6 +681,21 @@ async def submit_feedback(payload: FeedbackIn) -> Dict[str, str]:
 # Snowflake-style analytics layer
 # ---------------------------------------------------------------------------
 async def _aggregate_top_phrases() -> List[Dict[str, Any]]:
+    if _use_memory_store():
+        grouped: Dict[str, List[float]] = {}
+        for row in _memory_collection("detected_signs"):
+            grouped.setdefault(row["sign_key"], []).append(float(row.get("confidence") or 0))
+        rows = sorted(grouped.items(), key=lambda item: len(item[1]), reverse=True)[:8]
+        if rows:
+            return [
+                {
+                    "sign_key": key,
+                    "count": len(values),
+                    "avg_conf": round(sum(values) / len(values), 2) if values else 0.0,
+                }
+                for key, values in rows
+            ]
+
     pipeline = [
         {"$group": {"_id": "$sign_key", "count": {"$sum": 1}, "avg_conf": {"$avg": "$confidence"}}},
         {"$sort": {"count": -1}},
@@ -402,7 +717,13 @@ async def _aggregate_top_phrases() -> List[Dict[str, Any]]:
 
 
 async def _confidence_timeseries() -> List[Dict[str, Any]]:
-    rows = await db.detected_signs.find({}, {"_id": 0, "confidence": 1, "created_at": 1}).to_list(500)
+    if _use_memory_store():
+        rows = [
+            {"confidence": row.get("confidence"), "created_at": row.get("created_at")}
+            for row in _memory_collection("detected_signs")
+        ]
+    else:
+        rows = await db.detected_signs.find({}, {"_id": 0, "confidence": 1, "created_at": 1}).to_list(500)
     if not rows:
         # synthesize a 14-day rising curve
         out: List[Dict[str, Any]] = []
@@ -429,7 +750,10 @@ async def _confidence_timeseries() -> List[Dict[str, Any]]:
 
 async def _emergency_trend() -> List[Dict[str, Any]]:
     emergency_keys = {p["key"] for p in PHRASE_CATALOG if p.get("emergency")}
-    rows = await db.detected_signs.find({}, {"_id": 0}).to_list(1000)
+    if _use_memory_store():
+        rows = list(_memory_collection("detected_signs"))
+    else:
+        rows = await db.detected_signs.find({}, {"_id": 0}).to_list(1000)
     buckets: Dict[str, int] = {}
     for r in rows:
         if r.get("sign_key") not in emergency_keys:
@@ -468,20 +792,29 @@ async def snowflake_analytics() -> Dict[str, Any]:
         _emergency_trend(),
         _accessibility_gaps(),
     )
-    convo_count = await db.conversations.count_documents({})
-    msg_count = await db.messages.count_documents({})
-    sign_count = await db.detected_signs.count_documents({})
+    convo_count = await _count_documents("conversations")
+    msg_count = await _count_documents("messages")
+    sign_count = await _count_documents("detected_signs")
 
     avg_conf = (
         sum(r["avg_confidence"] for r in confidence_series) / len(confidence_series)
         if confidence_series else 0.0
     )
 
-    misinterpreted = await db.feedback_corrections.aggregate([
-        {"$group": {"_id": "$sign_key", "count": {"$sum": 1}}},
-        {"$sort": {"count": -1}},
-        {"$limit": 5},
-    ]).to_list(10)
+    if _use_memory_store():
+        grouped: Dict[str, int] = {}
+        for row in _memory_collection("feedback_corrections"):
+            grouped[row["sign_key"]] = grouped.get(row["sign_key"], 0) + 1
+        misinterpreted = [
+            {"_id": key, "count": count}
+            for key, count in sorted(grouped.items(), key=lambda item: item[1], reverse=True)[:5]
+        ]
+    else:
+        misinterpreted = await db.feedback_corrections.aggregate([
+            {"$group": {"_id": "$sign_key", "count": {"$sum": 1}}},
+            {"$sort": {"count": -1}},
+            {"$limit": 5},
+        ]).to_list(10)
     if not misinterpreted:
         misinterpreted = [
             {"_id": "water", "count": 6},

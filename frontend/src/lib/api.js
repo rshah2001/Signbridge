@@ -1,6 +1,11 @@
 import axios from "axios";
 
-export const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
+const browserOrigin = typeof window !== "undefined" ? window.location.origin : "";
+const localBackend = "http://127.0.0.1:8000";
+
+export const BACKEND_URL =
+  process.env.REACT_APP_BACKEND_URL ||
+  (browserOrigin.includes("localhost") ? localBackend : browserOrigin);
 export const API = `${BACKEND_URL}/api`;
 
 export const api = axios.create({ baseURL: API, timeout: 60000 });
@@ -52,5 +57,10 @@ export async function logSignDetection(payload) {
 
 export async function getAnalytics() {
   const { data } = await api.get("/analytics/snowflake");
+  return data;
+}
+
+export async function getHealth() {
+  const { data } = await api.get("/health");
   return data;
 }

@@ -3,6 +3,7 @@ import { iconFor } from "../lib/signIcons";
 export const SignCard = ({ phrase, active, onClick, compact }) => {
   const Icon = iconFor(phrase.icon);
   const emergency = phrase.emergency;
+  const hasClip = Boolean(phrase.video_path);
   return (
     <button
       type="button"
@@ -19,8 +20,17 @@ export const SignCard = ({ phrase, active, onClick, compact }) => {
         <Icon strokeWidth={1.5} className="h-5 w-5" />
       </div>
       <div className="space-y-1">
-        <div className={`font-display ${compact ? "text-sm" : "text-base"} font-medium leading-tight`}>
-          {phrase.label}
+        <div className="flex flex-wrap items-center gap-1.5">
+          <div className={`font-display ${compact ? "text-sm" : "text-base"} font-medium leading-tight`}>
+            {phrase.label}
+          </div>
+          {hasClip && (
+            <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] ${
+              active ? "bg-white/15 text-white/80" : "bg-[#2E5A44]/8 text-[#2E5A44]"
+            }`}>
+              clip
+            </span>
+          )}
         </div>
         {!compact && (
           <div className={`text-xs leading-snug ${active ? "text-white/80" : "text-[#5C6B62]"}`}>

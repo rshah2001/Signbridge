@@ -15,7 +15,7 @@ Hackathon-grade. Must demo in 3–5 mins. Wins judged on Tech-for-Good, Best Use
 
 ## Tech Stack
 - **Frontend**: React 19 + Tailwind + shadcn/ui + Recharts + lucide-react + Manrope/Work Sans
-- **Backend**: FastAPI + emergentintegrations (Gemini 2.5 Flash) + httpx (ElevenLabs proxy)
+- **Backend**: FastAPI + Gemini API integration + httpx (ElevenLabs proxy)
 - **DB**: MongoDB (motor)
 - **CV**: MediaPipe Hands via CDN (browser)
 - **STT**: Web Speech API (browser)

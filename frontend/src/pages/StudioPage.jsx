@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Mic, MicOff, Send, Volume2, Camera, CameraOff, Loader2, MessageSquare, Sparkles, Hand } from "lucide-react";
+import { AlertTriangle, Mic, MicOff, Send, Volume2, Camera, CameraOff, Loader2, MessageSquare, Sparkles, Hand, ShieldAlert, Pause, Play, RotateCcw, ChevronRight } from "lucide-react";
 import { toast, Toaster } from "sonner";
 import {
   addMessage, createConversation, getConversation, getPhrases,
@@ -9,16 +9,135 @@ import { SignCard } from "../components/SignCard";
 import { useSpeechRecognition } from "../hooks/useSpeechRecognition";
 import { useMediaPipeHands } from "../hooks/useMediaPipeHands";
 import { iconFor } from "../lib/signIcons";
+import { useAppHealth } from "../context/AppHealthContext";
 
-/* ---------------- Sign output center: animated phrase reveal ---------------- */
+const VIDEO_NAME_OVERRIDES = {
+  do_not: "Do Not",
+  does_not: "Does Not",
+  thank_you: "Thank You",
+  me: "ME",
+};
+
+const titleCase = (value) => value
+  .split(" ")
+  .filter(Boolean)
+  .map((part) => (part.length <= 2 ? part.toUpperCase() : part[0].toUpperCase() + part.slice(1).toLowerCase()))
+  .join(" ");
+
+const candidateVideoUrls = (phraseLike) => {
+  if (!phraseLike) return [];
+  const candidates = [];
+  const pushCandidate = (value) => {
+    if (!value) return;
+    const normalized = `${value}`.trim();
+    if (!normalized) return;
+    candidates.push(`/sign-videos/${encodeURIComponent(normalized)}.mp4`);
+  };
+
+  pushCandidate(phraseLike.video_asset);
+  if (phraseLike.video_path) {
+    candidates.push(phraseLike.video_path);
+  }
+
+  const key = phraseLike.key || "";
+  const label = phraseLike.label || key.replace(/_/g, " ");
+  pushCandidate(VIDEO_NAME_OVERRIDES[key]);
+  pushCandidate(label);
+  pushCandidate(titleCase(label.replace(/_/g, " ")));
+  pushCandidate(titleCase(key.replace(/_/g, " ")));
+  if (key.length === 1) pushCandidate(key.toUpperCase());
+
+  return [...new Set(candidates)];
+};
+
+const SignClip = ({ phrase, className = "", autoPlay = true }) => {
+  const urls = useMemo(() => candidateVideoUrls(phrase), [phrase]);
+  const [index, setIndex] = useState(0);
+
+  useEffect(() => {
+    setIndex(0);
+  }, [urls]);
+
+  if (!urls.length || index >= urls.length) return null;
+
+  return (
+    <video
+      key={urls[index]}
+      className={className}
+      src={urls[index]}
+      autoPlay={autoPlay}
+      loop={autoPlay}
+      muted
+      playsInline
+      controls={!autoPlay}
+      onError={() => setIndex((current) => current + 1)}
+    />
+  );
+};
+
+const playbackItemForToken = (token, phraseMap) => phraseMap[token] || {
+  key: token,
+  label: token.replace(/_/g, " "),
+  icon: "MessageSquare",
+  description: "Finger-spelled fallback",
+};
+
+/* ---------------- Sign output center: sequential clip playback ------------- */
 const SignReveal = ({ tokens, phrases, simplified }) => {
   const phraseMap = useMemo(() => Object.fromEntries(phrases.map((p) => [p.key, p])), [phrases]);
+  const playbackItems = useMemo(
+    () => tokens.map((token) => playbackItemForToken(token, phraseMap)),
+    [phraseMap, tokens],
+  );
+  const [currentIndex, setCurrentIndex] = useState(0);
+  const [isPlaying, setIsPlaying] = useState(true);
+  const videoRef = useRef(null);
+  const currentItem = playbackItems[currentIndex] || null;
+  const currentUrls = useMemo(() => candidateVideoUrls(currentItem), [currentItem]);
+  const [currentUrlIndex, setCurrentUrlIndex] = useState(0);
+  const activeVideoUrl = currentUrls[currentUrlIndex] || null;
+
+  useEffect(() => {
+    setCurrentIndex(0);
+    setIsPlaying(true);
+  }, [tokens, simplified]);
+
+  useEffect(() => {
+    setCurrentUrlIndex(0);
+  }, [currentItem]);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    if (isPlaying) {
+      video.play().catch(() => {});
+    } else {
+      video.pause();
+    }
+  }, [activeVideoUrl, currentIndex, isPlaying]);
+
+  const advance = useCallback(() => {
+    setCurrentIndex((index) => {
+      if (index >= playbackItems.length - 1) {
+        setIsPlaying(false);
+        return index;
+      }
+      return index + 1;
+    });
+  }, [playbackItems.length]);
+
+  const restart = useCallback(() => {
+    setCurrentIndex(0);
+    setCurrentUrlIndex(0);
+    setIsPlaying(true);
+  }, []);
+
   return (
     <div className="flex h-full flex-col">
       <div className="mb-3 flex items-center gap-2 text-xs uppercase tracking-[0.2em] text-[#5C6B62]">
         <Sparkles strokeWidth={1.5} className="h-4 w-4 text-[#2E5A44]" /> Sign output
       </div>
-      {tokens.length === 0 ? (
+      {playbackItems.length === 0 ? (
         <div className="flex flex-1 flex-col items-center justify-center text-center">
           <Hand strokeWidth={1.2} className="h-16 w-16 text-[#DCD5C9]" />
           <p className="mt-4 max-w-[26ch] text-sm text-[#5C6B62]">
@@ -31,25 +150,90 @@ const SignReveal = ({ tokens, phrases, simplified }) => {
             <div className="text-xs uppercase tracking-[0.18em] text-[#5C6B62]">Simplified by Gemini</div>
             <div className="mt-2 font-display text-xl leading-snug">{simplified}</div>
           </div>
-          <div className="mt-4 grid flex-1 grid-cols-2 gap-3 overflow-auto pr-1 sm:grid-cols-3">
-            {tokens.map((t, i) => {
-              const p = phraseMap[t] || { key: t, label: t.replace(/_/g, " "), icon: "MessageSquare", description: "Finger-spelled" };
-              const Icon = iconFor(p.icon);
-              return (
-                <div
-                  key={`${t}-${i}`}
-                  className="fade-in-up clay-card rounded-xl p-4"
-                  style={{ animationDelay: `${i * 120}ms` }}
-                  data-testid={`sign-output-${t}`}
-                >
-                  <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-[#2E5A44] text-white">
-                    <Icon strokeWidth={1.5} className="h-5 w-5" />
-                  </div>
-                  <div className="mt-3 font-display text-sm font-medium capitalize">{p.label}</div>
-                  <div className="text-[11px] text-[#5C6B62]">step {i + 1}</div>
+          <div className="mt-4 flex flex-1 flex-col gap-4">
+            <div className="overflow-hidden rounded-2xl border border-[#DCD5C9] bg-[#F3E8C8]">
+              {activeVideoUrl ? (
+                <video
+                  key={`${currentItem?.key || "empty"}-${currentUrlIndex}`}
+                  ref={videoRef}
+                  className="h-[320px] w-full object-cover"
+                  src={activeVideoUrl}
+                  playsInline
+                  muted
+                  autoPlay={isPlaying}
+                  controls
+                  onEnded={advance}
+                  onError={() => {
+                    if (currentUrlIndex < currentUrls.length - 1) {
+                      setCurrentUrlIndex((index) => index + 1);
+                    } else {
+                      advance();
+                    }
+                  }}
+                  data-testid={`sign-output-${currentItem?.key || "sequence"}`}
+                />
+              ) : (
+                <div className="flex h-[320px] flex-col items-center justify-center bg-[#F7F5F0] px-6 text-center">
+                  <Hand className="h-12 w-12 text-[#B9B0A2]" />
+                  <p className="mt-3 text-sm text-[#5C6B62]">
+                    No exact clip for <span className="font-medium text-[#1F2421]">{currentItem?.label}</span>. Moving to the next sign.
+                  </p>
                 </div>
-              );
-            })}
+              )}
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setIsPlaying((value) => !value)}
+                className="inline-flex items-center gap-2 rounded-full bg-[#2E5A44] px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-[#244a37]"
+              >
+                {isPlaying ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
+                {isPlaying ? "Pause sequence" : "Play sequence"}
+              </button>
+              <button
+                type="button"
+                onClick={restart}
+                className="inline-flex items-center gap-2 rounded-full border border-[#DCD5C9] bg-white px-4 py-2 text-sm font-medium text-[#1F2421] transition-colors hover:border-[#2E5A44] hover:text-[#2E5A44]"
+              >
+                <RotateCcw className="h-4 w-4" />
+                Restart
+              </button>
+              <div className="rounded-full bg-[#F7F5F0] px-3 py-1.5 text-xs uppercase tracking-[0.16em] text-[#5C6B62]">
+                Step {Math.min(currentIndex + 1, playbackItems.length)} of {playbackItems.length}
+              </div>
+            </div>
+            <div className="grid gap-2 overflow-auto pr-1 sm:grid-cols-2">
+              {playbackItems.map((item, index) => {
+                const Icon = iconFor(item.icon);
+                const isActive = index === currentIndex;
+                const isCompleted = index < currentIndex;
+                return (
+                  <div
+                    key={`${item.key}-${index}`}
+                    className={`rounded-xl border p-3 transition-all ${
+                      isActive
+                        ? "border-[#2E5A44] bg-[#2E5A44] text-white"
+                        : isCompleted
+                          ? "border-[#CFC7B8] bg-[#F7F5F0] text-[#5C6B62]"
+                          : "border-[#DCD5C9] bg-white text-[#1F2421]"
+                    }`}
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className={`flex h-9 w-9 items-center justify-center rounded-full ${isActive ? "bg-white/15" : "bg-[#EEE7D8]"}`}>
+                        <Icon className={`h-4 w-4 ${isActive ? "text-white" : "text-[#2E5A44]"}`} />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="font-display text-sm">{item.label}</div>
+                        <div className={`text-[11px] ${isActive ? "text-white/75" : "text-[#5C6B62]"}`}>
+                          {candidateVideoUrls(item).length ? "clip ready" : "letter fallback"}
+                        </div>
+                      </div>
+                      {index < playbackItems.length - 1 && <ChevronRight className={`h-4 w-4 ${isActive ? "text-white/80" : "text-[#B9B0A2]"}`} />}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
           </div>
         </>
       )}
@@ -59,6 +243,7 @@ const SignReveal = ({ tokens, phrases, simplified }) => {
 
 /* -------------------------------- Studio page ------------------------------- */
 export default function StudioPage() {
+  const { health, error: healthError, refresh: refreshHealth } = useAppHealth();
   const [phrases, setPhrases] = useState([]);
   const [convo, setConvo] = useState(null);
   const [messages, setMessages] = useState([]);
@@ -77,6 +262,34 @@ export default function StudioPage() {
   const [autoSpeak, setAutoSpeak] = useState(true);
   const phrasesRef = useRef([]);
   const lastSpokenRef = useRef({ key: null, at: 0 });
+  const emergencyKeys = useMemo(
+    () => new Set(phrases.filter((p) => p.emergency).map((p) => p.key)),
+    [phrases],
+  );
+  const emergencyPhrases = useMemo(() => phrases.filter((p) => p.emergency), [phrases]);
+  const emergencyQueue = useMemo(
+    () => pendingSigns.filter((item) => emergencyKeys.has(item.key)),
+    [emergencyKeys, pendingSigns],
+  );
+  const sortedPhrases = useMemo(
+    () => [...phrases].sort((a, b) =>
+      Number(b.emergency) - Number(a.emergency)
+      || Number(Boolean(b.video_path)) - Number(Boolean(a.video_path))
+      || a.label.localeCompare(b.label)),
+    [phrases],
+  );
+  const queuedPreview = useMemo(() => {
+    const latest = pendingSigns[pendingSigns.length - 1];
+    if (!latest) return null;
+    return phrases.find((phrase) => phrase.key === latest.key) || {
+      key: latest.key,
+      label: latest.key.replace(/_/g, " "),
+    };
+  }, [pendingSigns, phrases]);
+  const clipReadyCount = useMemo(
+    () => phrases.filter((phrase) => Boolean(phrase.video_path)).length,
+    [phrases],
+  );
 
   const handleSpeechFinal = useCallback(async (final) => {
     if (!final) return;
@@ -117,7 +330,11 @@ export default function StudioPage() {
     }).catch(() => {});
     const phrase = phrasesRef.current.find((p) => p.key === cls.key);
     const label = phrase?.label || cls.key.replace(/_/g, " ");
-    toast.success(`Detected: ${label}`, { duration: 1400 });
+    if (phrase?.emergency) {
+      toast.error(`Emergency sign detected: ${label}`, { duration: 2200 });
+    } else {
+      toast.success(`Detected: ${label}`, { duration: 1400 });
+    }
     if (autoSpeak) {
       const now = Date.now();
       // 2-second dedupe: same phrase won't be spoken again within 2s
@@ -143,11 +360,12 @@ export default function StudioPage() {
         phrasesRef.current = p;
         setConvo(c);
         convoIdRef.current = c.id;
+        refreshHealth();
       } catch (e) {
         toast.error("Backend not reachable");
       }
     })();
-  }, []);
+  }, [refreshHealth]);
 
   const refreshMessages = useCallback(async (id) => {
     if (!id) return;
@@ -233,10 +451,46 @@ export default function StudioPage() {
   };
 
   const clearPending = () => setPendingSigns([]);
+  const llmAvailable = Boolean(health?.services?.llm?.ok);
+  const ttsAvailable = Boolean(health?.services?.tts?.ok);
+  const dbMode = health?.services?.database?.mode || "unknown";
 
   return (
     <div data-testid="studio-page" className="mx-auto max-w-[1500px] px-4 pb-12 pt-6 lg:px-6">
       <Toaster richColors position="top-right" />
+      <div className="mb-4 grid gap-3 lg:grid-cols-[1.5fr_1fr]">
+        <div className="rounded-2xl border border-[#DCD5C9] bg-white/85 p-4">
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="inline-flex items-center gap-2 rounded-full bg-[#F7F5F0] px-3 py-1 text-xs uppercase tracking-[0.18em] text-[#5C6B62]">
+              <ShieldAlert className="h-4 w-4 text-[#B34D41]" />
+              Emergency workflow
+            </div>
+            <p className="text-sm text-[#5C6B62]">
+              Priority signs stay pinned in the queue and are tracked in analytics. Use these shortcuts for urgent communication.
+            </p>
+          </div>
+          <div className="mt-3 flex flex-wrap gap-2">
+            {emergencyPhrases.map((phrase) => (
+              <button
+                key={phrase.key}
+                type="button"
+                onClick={() => handlePushPhrase(phrase)}
+                className="rounded-full border border-[#B34D41]/25 bg-[#B34D41]/8 px-3 py-1.5 text-xs font-medium text-[#8f3b33] transition-colors hover:bg-[#B34D41]/12"
+              >
+                {phrase.label}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="rounded-2xl border border-[#DCD5C9] bg-white/85 p-4">
+          <div className="text-xs uppercase tracking-[0.18em] text-[#5C6B62]">Live system notes</div>
+          <div className="mt-2 space-y-2 text-sm text-[#1F2421]/80">
+            <p>{healthError ? "Backend status is currently unavailable." : `Database mode: ${dbMode}.`}</p>
+            <p>{llmAvailable ? "AI phrase simplification is live." : "AI phrase simplification is running in local fallback mode."}</p>
+            <p>{ttsAvailable ? "Voice playback uses ElevenLabs." : "Voice playback will fall back to the browser voice."}</p>
+          </div>
+        </div>
+      </div>
       <div className="mb-6 flex flex-wrap items-end justify-between gap-3">
         <div>
           <div className="text-xs uppercase tracking-[0.28em] text-[#5C6B62]">Live communication studio</div>
@@ -250,6 +504,18 @@ export default function StudioPage() {
           </div>
         )}
       </div>
+      {emergencyQueue.length > 0 && (
+        <div className="mb-4 rounded-2xl border border-[#B34D41]/25 bg-[#B34D41]/8 p-4 text-[#8f3b33]" data-testid="emergency-queue-banner">
+          <div className="flex items-center gap-2 text-xs uppercase tracking-[0.18em]">
+            <AlertTriangle className="h-4 w-4" />
+            Priority queue active
+          </div>
+          <p className="mt-2 text-sm">
+            Emergency signs in queue: {emergencyQueue.map((item) => item.key.replace(/_/g, " ")).join(", ")}.
+            Speaking now will prioritize urgent language for the hearing listener.
+          </p>
+        </div>
+      )}
 
       {/* Main grid */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">
@@ -411,10 +677,10 @@ export default function StudioPage() {
           <div className="mt-5">
             <div className="mb-2 flex items-center justify-between">
               <div className="text-[11px] uppercase tracking-[0.18em] text-[#5C6B62]">Tap to sign</div>
-              <span className="text-[11px] text-[#5C6B62]">{phrases.length} phrases</span>
+              <span className="text-[11px] text-[#5C6B62]">{phrases.length} phrases · {clipReadyCount} clips</span>
             </div>
             <div className="grid max-h-72 grid-cols-2 gap-2 overflow-auto pr-1 sm:grid-cols-3">
-              {phrases.map((p) => (
+              {sortedPhrases.map((p) => (
                 <SignCard
                   key={p.key}
                   phrase={p}
@@ -440,12 +706,39 @@ export default function StudioPage() {
               {pendingSigns.length === 0 ? (
                 <div className="text-xs text-[#5C6B62]">Sign or tap phrases — they queue here.</div>
               ) : pendingSigns.map((s, i) => (
-                <span key={i} className="inline-flex items-center gap-1.5 rounded-full bg-white px-3 py-1 text-xs font-medium text-[#1F2421] border border-[#DCD5C9]">
+                <span
+                  key={i}
+                  className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium border ${
+                    emergencyKeys.has(s.key)
+                      ? "border-[#B34D41]/25 bg-[#B34D41]/8 text-[#8f3b33]"
+                      : "border-[#DCD5C9] bg-white text-[#1F2421]"
+                  }`}
+                >
                   {s.key.replace(/_/g, " ")}
                   <span className="font-mono-ui text-[10px] text-[#5C6B62]">{Math.round(s.confidence * 100)}%</span>
                 </span>
               ))}
             </div>
+            {queuedPreview && (
+              <div className="mt-3 overflow-hidden rounded-xl border border-[#DCD5C9] bg-white">
+                <div className="flex items-center justify-between border-b border-[#E6DFD3] px-3 py-2">
+                  <div>
+                    <div className="text-[11px] uppercase tracking-[0.18em] text-[#5C6B62]">Latest queued sign</div>
+                    <div className="font-display text-sm">{queuedPreview.label}</div>
+                  </div>
+                  <span className="rounded-full bg-[#2E5A44]/8 px-2 py-0.5 text-[10px] uppercase tracking-[0.14em] text-[#2E5A44]">
+                    {candidateVideoUrls(queuedPreview).length ? "clip ready" : "text only"}
+                  </span>
+                </div>
+                {candidateVideoUrls(queuedPreview).length ? (
+                  <SignClip phrase={queuedPreview} className="h-40 w-full bg-[#EEE7D8] object-cover" />
+                ) : (
+                  <div className="flex h-28 items-center justify-center px-4 text-center text-xs text-[#5C6B62]">
+                    No matching clip yet for this phrase. The app will still translate it as text and voice.
+                  </div>
+                )}
+              </div>
+            )}
             <button
               type="button"
               data-testid="speak-signs-button"
@@ -454,7 +747,7 @@ export default function StudioPage() {
               className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-full bg-[#2E5A44] px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-[#244a37] disabled:opacity-50 ring-focus"
             >
               {s2vLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Volume2 className="h-4 w-4" />}
-              Speak with ElevenLabs voice
+              {ttsAvailable ? "Speak with ElevenLabs voice" : "Speak with browser fallback"}
             </button>
             {audioUrl && (
               <audio ref={audioRef} src={audioUrl} controls className="mt-3 w-full" data-testid="tts-audio" />

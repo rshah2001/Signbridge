@@ -47,7 +47,7 @@ class TestPhrases:
         assert r.status_code == 200
         data = r.json()
         assert isinstance(data, list)
-        assert len(data) == 14, f"expected 14 phrases, got {len(data)}"
+        assert len(data) >= 20, f"expected expanded phrase catalog, got {len(data)}"
         # No mongo _id leaking
         for p in data:
             assert "_id" not in p
@@ -118,12 +118,12 @@ class TestTranslate:
     def test_voice_to_sign(self, http):
         r = http.post(
             f"{API}/translate/voice-to-sign",
-            json={"text": "I really need a doctor immediately"},
+            json={"text": "I need help right now"},
             timeout=60,
         )
         assert r.status_code == 200, r.text
         data = r.json()
-        assert data["original"] == "I really need a doctor immediately"
+        assert data["original"] == "I need help right now"
         assert isinstance(data.get("simplified"), str) and data["simplified"]
         assert isinstance(data.get("sign_tokens"), list) and len(data["sign_tokens"]) > 0
         assert isinstance(data.get("matched_phrases"), list)
@@ -135,12 +135,12 @@ class TestTranslate:
     def test_sign_to_voice(self, http):
         r = http.post(
             f"{API}/translate/sign-to-voice",
-            json={"sign_tokens": ["help", "doctor", "pain"]},
+            json={"sign_tokens": ["help", "safe", "now"]},
             timeout=60,
         )
         assert r.status_code == 200, r.text
         data = r.json()
-        assert data["sign_tokens"] == ["help", "doctor", "pain"]
+        assert data["sign_tokens"] == ["help", "safe", "now"]
         assert isinstance(data["sentence"], str) and len(data["sentence"]) > 0
         assert 0.0 <= data["confidence"] <= 1.0
 
@@ -194,9 +194,9 @@ class TestSignsAndFeedback:
         r = http.post(
             f"{API}/feedback",
             json={
-                "sign_key": "water",
-                "expected": "water",
-                "actual": "bathroom",
+                "sign_key": "safe",
+                "expected": "safe",
+                "actual": "sign",
                 "note": "TEST_pytest feedback",
             },
         )
