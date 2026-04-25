@@ -1,0 +1,110 @@
+{
+  "theme": "LIGHT",
+  "archetype": "1 (Organic & Earthy)",
+  "rationale": "Healthcare and accessibility applications require warmth, trust, and clarity. A light theme with earthy, natural tones (bone white, warm sand, sage green) removes the 'sterile/clinical' feel while maintaining the high contrast needed for WCAG 2.1 AA accessibility standards.",
+  "colors": {
+    "background": "#F7F5F0",
+    "foreground": "#1F2421",
+    "card": "#FFFFFF",
+    "card_foreground": "#1F2421",
+    "popover": "#FFFFFF",
+    "popover_foreground": "#1F2421",
+    "primary": "#2E5A44",
+    "primary_foreground": "#FFFFFF",
+    "secondary": "#E6DFD3",
+    "secondary_foreground": "#1F2421",
+    "muted": "#E6DFD3",
+    "muted_foreground": "#5C6B62",
+    "accent": "#E6DFD3",
+    "accent_foreground": "#1F2421",
+    "destructive": "#B34D41",
+    "destructive_foreground": "#FFFFFF",
+    "border": "#DCD5C9",
+    "input": "#DCD5C9",
+    "ring": "#2E5A44"
+  },
+  "typography": {
+    "font_families": {
+      "headings": "'Manrope', sans-serif",
+      "body": "'Work Sans', sans-serif",
+      "mono": "'JetBrains Mono', monospace"
+    },
+    "hierarchy": {
+      "h1": "text-4xl sm:text-5xl lg:text-6xl tracking-tight font-light",
+      "h2": "text-2xl sm:text-3xl lg:text-4xl tracking-tight font-medium",
+      "h3": "text-xl sm:text-2xl font-medium",
+      "h4": "text-lg sm:text-xl font-medium",
+      "body": "text-base leading-relaxed",
+      "small": "text-sm",
+      "overline": "text-xs uppercase tracking-[0.2em]"
+    },
+    "instructions": "Banned fonts: Inter, Roboto, Open Sans. Ensure APCA/WCAG AA contrast. Never use generic 'bold' everywhere; use font-light for large H1s and font-medium for standard headings."
+  },
+  "spacing_and_layout": {
+    "scale": "Tailwind standard (p-4, p-6, p-8, p-12, p-16, p-24, p-32)",
+    "generous_spacing": "Use 2-3x more spacing than default. Containers with borders MUST have generous internal padding (p-6 or p-8) to prevent text collision.",
+    "grid_modes": {
+      "landing_page": "BENTO GRID MODE A (Tetris Grid) - grid-cols-1 md:grid-cols-8 lg:grid-cols-12, gap-8 to gap-12, heavily asymmetrical.",
+      "studio_dashboard": "CONTROL ROOM GRID MODE B - grid-cols-1 md:grid-cols-3 lg:grid-cols-4, tight gaps (gap-4 or gap-6). Ensure full height span usage (h-full) so widgets stretch."
+    },
+    "alignment": "Left-align dense text and paragraphs. Center-align hero text only if visually balanced. Use optical alignment for icons/text."
+  },
+  "surface_strategies": {
+    "header": "Crystal Glassmorphism: backdrop-blur-xl bg-[#F7F5F0]/80 with 1px delicate inner stroke (border-white/40). Ensures navigation remains readable over scrolling content.",
+    "cards_and_widgets": "Neumorphic/Clay hybrid: Flat background (bg-white), 1px solid border (border-[#DCD5C9]), soft ambient shadow. Hover state: -translate-y-1, shadow-lg, and explicitly change text color if background changes.",
+    "studio_video_feed": "Grid Borders: Enclose video panels in 1px solid borders. No rounded corners inside the grid (technical look) to maximize camera space.",
+    "buttons": "Primary actions use solid Sage (#2E5A44). Quick-action manual sign phrase buttons use secondary or muted variants with explicit hover states."
+  },
+  "motion_and_interactions": {
+    "hover_states": "ALWAYS set explicit text color on hover (e.g., hover:bg-[#2E5A44] hover:text-white). Focus states must have ring-2 ring-[#2E5A44].",
+    "accessibility": "MUST respect prefers-reduced-motion. Wrap structural layout directly, do not break grid with framer-motion divs (motion.div must be the direct child or hold the specific class).",
+    "transitions": "Use explicit transitions: transition-all duration-300 ease-out."
+  },
+  "components": {
+    "forms_and_inputs": "Shadcn components heavily customized to match the Organic & Earthy palette. No default Vercel-look borders.",
+    "charts": "Use Recharts or Shadcn Chart components for the Snowflake-style analytics dashboard. Ensure palettes are color-blind friendly.",
+    "quick_action_phrases": "Rendered as pill-shaped or masonry-grid buttons using secondary colors.",
+    "video_studio": "Dual-pane layout. The Hearing speaker and Deaf signer panes must be visually balanced, side-by-side on desktop, stacked on mobile."
+  },
+  "icons": {
+    "library": "lucide-react",
+    "instructions": "Use lucide-react for all interface icons. Use stroke-width 1.5 for a modern, clean look."
+  },
+  "media": {
+    "instructions": "Use exact provided URLs. NEVER use placeholders.",
+    "image_urls": {
+      "hero_background": {
+        "url": "https://images.pexels.com/photos/7659876/pexels-photo-7659876.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+        "description": "Doctor consults with a patient. Use in the landing page hero section or about section to build trust."
+      },
+      "sign_language_demo": {
+        "url": "https://images.pexels.com/photos/9017017/pexels-photo-9017017.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+        "description": "A woman making sign language gestures in a close-up shot indoors. Ideal for the 'How it Works' section or Studio preview."
+      },
+      "sign_language_poster": {
+        "url": "https://images.unsplash.com/photo-1773800924117-a387786c60a0?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzMjd8MHwxfHNlYXJjaHwzfHxzaWduJTIwbGFuZ3VhZ2UlMjBjb21tdW5pY2F0aW9ufGVufDB8fHx8MTc3NzE0ODY0MHww&ixlib=rb-4.1.0&q=85",
+        "description": "Hands forming American Sign Language alphabet. Use for educational sections or the phrase catalog background."
+      },
+      "healthcare_consultation": {
+        "url": "https://images.pexels.com/photos/6129441/pexels-photo-6129441.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+        "description": "Healthcare professional consulting a patient. Perfect for showing real-world impact in the landing page."
+      },
+      "asl_demonstration": {
+        "url": "https://images.pexels.com/photos/9017056/pexels-photo-9017056.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+        "description": "Person demonstrating ASL in a black jacket. Use for feature section on 'Real-time translation'."
+      }
+    }
+  },
+  "accessibility_requirements": {
+    "contrast": "Minimum 4.5:1 for normal text, 3:1 for large text.",
+    "testing": "All interactive elements (buttons, inputs, video toggles, phrase buttons) MUST have 'data-testid' attributes using kebab-case role-based names (e.g., data-testid='toggle-camera-button')."
+  },
+  "instructions_to_main_agent": [
+    "Strictly follow the Organic & Earthy palette. No generic SaaS blue or mint.",
+    "Use Manrope for headings and Work Sans for body text.",
+    "Implement the Dual-pane real-time communication studio using the 'Control Room' grid layout.",
+    "Apply the 'data-testid' attribute to every actionable element for robust automated testing.",
+    "Construct the analytics dashboard with clear, accessible charts that rely on data shapes, not just color.",
+    "Ensure the hero layout is asymmetrical. DO NOT center-align everything by default."
+  ]
+}
