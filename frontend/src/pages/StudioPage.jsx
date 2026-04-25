@@ -9,6 +9,7 @@ import { SignCard } from "../components/SignCard";
 import { useSpeechRecognition } from "../hooks/useSpeechRecognition";
 import { useMediaPipeHands } from "../hooks/useMediaPipeHands";
 import { iconFor } from "../lib/signIcons";
+import { buildPlaybackSequence } from "../lib/signPlayback";
 import { useAppHealth } from "../context/AppHealthContext";
 
 const VIDEO_NAME_OVERRIDES = {
@@ -86,14 +87,21 @@ const playbackItemForToken = (token, phraseMap) => phraseMap[token] || {
 const SignReveal = ({ tokens, phrases, simplified }) => {
   const phraseMap = useMemo(() => Object.fromEntries(phrases.map((p) => [p.key, p])), [phrases]);
   const playbackItems = useMemo(
-    () => tokens.map((token) => playbackItemForToken(token, phraseMap)),
-    [phraseMap, tokens],
+    () => {
+      const byAsset = buildPlaybackSequence(simplified);
+      if (byAsset.length) return byAsset;
+      return tokens.map((token) => playbackItemForToken(token, phraseMap));
+    },
+    [phraseMap, simplified, tokens],
   );
   const [currentIndex, setCurrentIndex] = useState(0);
   const [isPlaying, setIsPlaying] = useState(true);
   const videoRef = useRef(null);
   const currentItem = playbackItems[currentIndex] || null;
-  const currentUrls = useMemo(() => candidateVideoUrls(currentItem), [currentItem]);
+  const currentUrls = useMemo(() => {
+    if (currentItem?.videoPath) return [currentItem.videoPath];
+    return candidateVideoUrls(currentItem);
+  }, [currentItem]);
   const [currentUrlIndex, setCurrentUrlIndex] = useState(0);
   const activeVideoUrl = currentUrls[currentUrlIndex] || null;
 
@@ -110,7 +118,10 @@ const SignReveal = ({ tokens, phrases, simplified }) => {
     const video = videoRef.current;
     if (!video) return;
     if (isPlaying) {
-      video.play().catch(() => {});
+      const playback = video.play?.();
+      if (playback && typeof playback.catch === "function") {
+        playback.catch(() => {});
+      }
     } else {
       video.pause();
     }
@@ -225,7 +236,7 @@ const SignReveal = ({ tokens, phrases, simplified }) => {
                       <div className="min-w-0 flex-1">
                         <div className="font-display text-sm">{item.label}</div>
                         <div className={`text-[11px] ${isActive ? "text-white/75" : "text-[#5C6B62]"}`}>
-                          {candidateVideoUrls(item).length ? "clip ready" : "letter fallback"}
+                          {item.assetName ? "asset clip" : candidateVideoUrls(item).length ? "clip ready" : "letter fallback"}
                         </div>
                       </div>
                       {index < playbackItems.length - 1 && <ChevronRight className={`h-4 w-4 ${isActive ? "text-white/80" : "text-[#B9B0A2]"}`} />}
@@ -259,7 +270,6 @@ export default function StudioPage() {
   const [s2vLoading, setS2vLoading] = useState(false);
   const [audioUrl, setAudioUrl] = useState(null);
   const audioRef = useRef(null);
-  const [autoSpeak, setAutoSpeak] = useState(true);
   const phrasesRef = useRef([]);
   const lastSpokenRef = useRef({ key: null, at: 0 });
   const emergencyKeys = useMemo(
@@ -278,14 +288,6 @@ export default function StudioPage() {
       || a.label.localeCompare(b.label)),
     [phrases],
   );
-  const queuedPreview = useMemo(() => {
-    const latest = pendingSigns[pendingSigns.length - 1];
-    if (!latest) return null;
-    return phrases.find((phrase) => phrase.key === latest.key) || {
-      key: latest.key,
-      label: latest.key.replace(/_/g, " "),
-    };
-  }, [pendingSigns, phrases]);
   const clipReadyCount = useMemo(
     () => phrases.filter((phrase) => Boolean(phrase.video_path)).length,
     [phrases],
@@ -335,15 +337,13 @@ export default function StudioPage() {
     } else {
       toast.success(`Detected: ${label}`, { duration: 1400 });
     }
-    if (autoSpeak) {
-      const now = Date.now();
-      // 2-second dedupe: same phrase won't be spoken again within 2s
-      if (lastSpokenRef.current.key !== cls.key || now - lastSpokenRef.current.at > 2000) {
-        lastSpokenRef.current = { key: cls.key, at: now };
-        speakImmediate(label);
-      }
+    const now = Date.now();
+    // 2-second dedupe: same phrase won't be spoken again within 2s
+    if (lastSpokenRef.current.key !== cls.key || now - lastSpokenRef.current.at > 2000) {
+      lastSpokenRef.current = { key: cls.key, at: now };
+      speakImmediate(label);
     }
-  }, [autoSpeak, speakImmediate]);
+  }, [speakImmediate]);
 
   const cam = useMediaPipeHands({ onSign: handleSignDetected });
 
@@ -612,22 +612,11 @@ export default function StudioPage() {
               </div>
               <div className="font-display text-lg">Sign or tap</div>
             </div>
-            <div className="flex items-center gap-2">
-              <label className="flex cursor-pointer items-center gap-2 rounded-full border border-[#DCD5C9] bg-white px-3 py-1.5 text-xs font-medium text-[#1F2421]" data-testid="auto-speak-toggle">
-                <input
-                  type="checkbox"
-                  checked={autoSpeak}
-                  onChange={(e) => setAutoSpeak(e.target.checked)}
-                  className="h-3.5 w-3.5 accent-[#2E5A44]"
-                />
-                Auto-speak
-              </label>
-              {cam.running && (
-                <span className="inline-flex items-center gap-2 rounded-full bg-[#2E5A44]/10 px-3 py-1 text-xs font-medium text-[#2E5A44]">
-                  <span className="dot-led bg-[#2E5A44] animate-pulse" /> tracking
-                </span>
-              )}
-            </div>
+            {cam.running && (
+              <span className="inline-flex items-center gap-2 rounded-full bg-[#2E5A44]/10 px-3 py-1 text-xs font-medium text-[#2E5A44]">
+                <span className="dot-led bg-[#2E5A44] animate-pulse" /> tracking + speaking
+              </span>
+            )}
           </div>
 
           {/* Camera */}
@@ -719,26 +708,9 @@ export default function StudioPage() {
                 </span>
               ))}
             </div>
-            {queuedPreview && (
-              <div className="mt-3 overflow-hidden rounded-xl border border-[#DCD5C9] bg-white">
-                <div className="flex items-center justify-between border-b border-[#E6DFD3] px-3 py-2">
-                  <div>
-                    <div className="text-[11px] uppercase tracking-[0.18em] text-[#5C6B62]">Latest queued sign</div>
-                    <div className="font-display text-sm">{queuedPreview.label}</div>
-                  </div>
-                  <span className="rounded-full bg-[#2E5A44]/8 px-2 py-0.5 text-[10px] uppercase tracking-[0.14em] text-[#2E5A44]">
-                    {candidateVideoUrls(queuedPreview).length ? "clip ready" : "text only"}
-                  </span>
-                </div>
-                {candidateVideoUrls(queuedPreview).length ? (
-                  <SignClip phrase={queuedPreview} className="h-40 w-full bg-[#EEE7D8] object-cover" />
-                ) : (
-                  <div className="flex h-28 items-center justify-center px-4 text-center text-xs text-[#5C6B62]">
-                    No matching clip yet for this phrase. The app will still translate it as text and voice.
-                  </div>
-                )}
-              </div>
-            )}
+            <div className="mt-3 rounded-xl border border-[#E6DFD3] bg-white px-3 py-2 text-xs text-[#5C6B62]">
+              Camera detection speaks recognized signs out loud and adds them to the queue. Sign videos play in the center panel only when the hearing user speaks or types.
+            </div>
             <button
               type="button"
               data-testid="speak-signs-button"

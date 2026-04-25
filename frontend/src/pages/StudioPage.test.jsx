@@ -62,6 +62,7 @@ describe("StudioPage", () => {
     api.getConversation.mockResolvedValue({ messages: [] });
     api.logSignDetection.mockResolvedValue({ status: "logged" });
     api.signToVoice.mockResolvedValue({ sentence: "I need help now.", confidence: 0.9 });
+    api.voiceToSign.mockResolvedValue({ simplified: "Hello thank you", sign_tokens: ["hello", "thank_you"] });
     api.speakTTS.mockRejectedValue(new Error("tts unavailable"));
     api.addMessage.mockResolvedValue({});
     window.speechSynthesis = { speak: jest.fn(), cancel: jest.fn() };
@@ -77,6 +78,8 @@ describe("StudioPage", () => {
     await waitFor(() => expect(screen.queryAllByText("Help").length).toBeGreaterThan(0));
     await waitFor(() => expect(screen.queryAllByText("Doctor").length).toBeGreaterThan(0));
     expect(screen.getByText(/browser voice/i)).toBeInTheDocument();
+    expect(screen.getByText(/camera detection speaks recognized signs out loud/i)).toBeInTheDocument();
+    expect(screen.getByText(/sign videos play in the center panel only/i)).toBeInTheDocument();
   });
 
   it("shows the emergency queue banner after adding an urgent sign", async () => {
@@ -88,5 +91,17 @@ describe("StudioPage", () => {
 
     expect(screen.getByTestId("emergency-queue-banner")).toBeInTheDocument();
     expect(screen.getByText(/emergency signs in queue/i)).toBeInTheDocument();
+  });
+
+  it("plays asset-backed sign output for hearing-user text input", async () => {
+    const user = userEvent.setup();
+    render(<StudioPage />);
+
+    await waitFor(() => expect(screen.getByTestId("hearing-text-input")).toBeInTheDocument());
+    await user.type(screen.getByTestId("hearing-text-input"), "Hello thank you");
+    await user.click(screen.getByTestId("hearing-send-button"));
+
+    await waitFor(() => expect(api.voiceToSign).toHaveBeenCalledWith("Hello thank you"));
+    await waitFor(() => expect(screen.getByTestId("sign-output-hello")).toBeInTheDocument());
   });
 });
