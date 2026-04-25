@@ -68,12 +68,14 @@ PHRASE_CATALOG: List[Dict[str, Any]] = [
     {"key": "please", "label": "Please", "icon": "Sparkles", "category": "greeting", "emergency": False, "description": "Flat palm circles on chest"},
     {"key": "hungry", "label": "Hungry", "icon": "Apple", "category": "need", "emergency": False, "description": "C-hand sweeps down chest"},
     {"key": "i_love_you", "label": "I love you", "icon": "HeartHandshake", "category": "feeling", "emergency": False, "description": "ILY combined handshape"},
+    {"key": "sorry", "label": "Sorry", "icon": "HandHeart", "category": "feeling", "emergency": False, "description": "A-hand fist circling on chest"},
 ]
 
 
 async def seed_phrases() -> None:
-    existing = await db.phrase_mappings.count_documents({})
-    if existing >= len(PHRASE_CATALOG):
+    existing_keys = {d.get("key") async for d in db.phrase_mappings.find({}, {"_id": 0, "key": 1})}
+    catalog_keys = {p["key"] for p in PHRASE_CATALOG}
+    if existing_keys == catalog_keys:
         return
     await db.phrase_mappings.delete_many({})
     docs = [

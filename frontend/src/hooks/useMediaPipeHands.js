@@ -18,33 +18,82 @@ function loadScript(src) {
   });
 }
 
-// Classify a single 21-landmark hand into one of our MVP signs.
-// Heuristic: count extended fingers (tip above pip in image-y, smaller y = up).
-function classify(landmarks) {
-  if (!landmarks || landmarks.length < 21) return null;
-  const tips = [4, 8, 12, 16, 20];
-  const pips = [2, 6, 10, 14, 18];
-  const extended = tips.map((tip, i) => {
-    if (i === 0) {
-      // thumb: compare x
-      return Math.abs(landmarks[tip].x - landmarks[0].x) > Math.abs(landmarks[pips[i]].x - landmarks[0].x) + 0.03;
-    }
-    return landmarks[tip].y < landmarks[pips[i]].y - 0.02;
-  });
-  const [thumb, index, middle, ring, pinky] = extended;
-  const count = extended.filter(Boolean).length;
+// Detect which fingers are extended for one hand.
+// Returns object {thumb, index, middle, ring, pinky, count, openness}.
+function fingerState(lm) {
+  if (!lm || lm.length < 21) return null;
+  // y in image coords: smaller y = higher (extended for non-thumbs)
+  const tipPip = [
+    [4, 2],   // thumb tip vs MCP base — handled by x distance
+    [8, 6],   // index
+    [12, 10], // middle
+    [16, 14], // ring
+    [20, 18], // pinky
+  ];
+  const wrist = lm[0];
+  // For thumb, compare horizontal distance (mirrored video doesn't matter — same hand frame)
+  const thumb = Math.hypot(lm[4].x - wrist.x, lm[4].y - wrist.y) >
+                Math.hypot(lm[2].x - wrist.x, lm[2].y - wrist.y) + 0.03 &&
+                Math.abs(lm[4].x - lm[3].x) > 0.04;
+  const ext = [thumb];
+  for (let i = 1; i < 5; i++) {
+    const [tip, pip] = tipPip[i];
+    ext.push(lm[tip].y < lm[pip].y - 0.025);
+  }
+  const [t, idx, mid, rng, pky] = ext;
+  return {
+    thumb: t, index: idx, middle: mid, ring: rng, pinky: pky,
+    count: ext.filter(Boolean).length,
+    palmY: lm[0].y,
+    openness: Math.hypot(lm[8].x - lm[4].x, lm[8].y - lm[4].y), // thumb-index distance
+  };
+}
 
-  // mapping rules → sign keys
-  if (thumb && index && !middle && !ring && pinky) return { key: "i_love_you", confidence: 0.92 };
+// Single-hand classification (returns {key, confidence} or null).
+function classify(lm) {
+  const s = fingerState(lm);
+  if (!s) return null;
+  const { thumb, index, middle, ring, pinky, count, openness } = s;
+
+  // ILY: thumb + index + pinky extended; middle + ring closed
+  if (thumb && index && !middle && !ring && pinky) return { key: "i_love_you", confidence: 0.94 };
+
+  // Open palm (5 fingers) → Hello (greeting wave)
   if (count === 5) return { key: "hello", confidence: 0.9 };
-  if (!thumb && index && middle && !ring && !pinky) return { key: "yes", confidence: 0.84 };
-  if (thumb && !index && !middle && !ring && !pinky) return { key: "yes", confidence: 0.8 };
-  if (!thumb && !index && !middle && !ring && !pinky) return { key: "no", confidence: 0.82 };
-  if (thumb && !index && !middle && !ring && pinky) return { key: "help", confidence: 0.86 };
-  if (!thumb && index && !middle && !ring && !pinky) return { key: "stop", confidence: 0.78 };
-  if (count === 4 && !thumb) return { key: "stop", confidence: 0.83 };
-  if (thumb && index && middle && !ring && !pinky) return { key: "water", confidence: 0.81 };
-  if (index && middle && ring && !pinky && !thumb) return { key: "thank_you", confidence: 0.8 };
+
+  // V-hand (index + middle, others closed) → Yes/peace
+  if (!thumb && index && middle && !ring && !pinky) return { key: "yes", confidence: 0.88 };
+
+  // W-hand (index + middle + ring, no thumb/pinky) → Water
+  if (!thumb && index && middle && ring && !pinky) return { key: "water", confidence: 0.86 };
+
+  // Y-hand (thumb + pinky only) → Hungry (or "call me" handshape)
+  if (thumb && !index && !middle && !ring && pinky) return { key: "hungry", confidence: 0.82 };
+
+  // Index only → Stop (pointed warning) or "wait" — map to Stop
+  if (!thumb && index && !middle && !ring && !pinky) return { key: "stop", confidence: 0.8 };
+
+  // 4 fingers no thumb (B-hand flat palm sideways) → Stop (B-hand)
+  if (!thumb && index && middle && ring && pinky) return { key: "stop", confidence: 0.85 };
+
+  // Thumbs up (only thumb extended) → Yes
+  if (thumb && !index && !middle && !ring && !pinky) return { key: "yes", confidence: 0.83 };
+
+  // Closed fist (no fingers extended at all) → Sorry (A-hand on chest)
+  if (count === 0) return { key: "sorry", confidence: 0.78 };
+
+  // Pinch (thumb + index, openness small) → No
+  if (thumb && index && !middle && !ring && !pinky) {
+    if (openness < 0.07) return { key: "no", confidence: 0.84 };
+    return { key: "no", confidence: 0.76 };
+  }
+
+  // Three forward fingers (thumb + index + middle) → Thank you / promise
+  if (thumb && index && middle && !ring && !pinky) return { key: "thank_you", confidence: 0.8 };
+
+  // Pinky-only → Pain (pinky finger pointing)
+  if (!thumb && !index && !middle && !ring && pinky) return { key: "pain", confidence: 0.74 };
+
   return null;
 }
 
@@ -115,18 +164,49 @@ export function useMediaPipeHands({ onSign } = {}) {
           return;
         }
 
-        // Two-hand specific signs (e.g., overlapping flat palms)
+        // Two-hand specific signs use ASL-aware heuristics
         let cls = null;
         if (lmList.length === 2) {
-          // Distance between wrists (landmark 0)
-          const w0 = lmList[0][0];
-          const w1 = lmList[1][0];
-          const dist = Math.hypot(w0.x - w1.x, w0.y - w1.y);
-          if (dist < 0.18) {
-            cls = { key: "stop", confidence: 0.9 }; // both hands close together = stop
-          } else if (dist < 0.35) {
-            // both hands in frame, slightly apart → "thank you"-like gesture
-            cls = { key: "thank_you", confidence: 0.85 };
+          const a = lmList[0];
+          const b = lmList[1];
+          const sa = fingerState(a);
+          const sb = fingerState(b);
+          // wrist distance
+          const w0 = a[0], w1 = b[0];
+          const wristDist = Math.hypot(w0.x - w1.x, w0.y - w1.y);
+          // index-tip distance (8-8) and palm centers
+          const palmDist = Math.hypot(a[9].x - b[9].x, a[9].y - b[9].y);
+
+          // Both fists very close → Stop (crossed fists)
+          if (sa && sb && sa.count <= 1 && sb.count <= 1 && wristDist < 0.16) {
+            cls = { key: "stop", confidence: 0.92 };
+          }
+          // Two open palms close together (prayer / please)
+          else if (sa && sb && sa.count >= 4 && sb.count >= 4 && palmDist < 0.18) {
+            cls = { key: "please", confidence: 0.9 };
+          }
+          // Both ILY-handshapes → strong I love you
+          else if (sa && sb && sa.thumb && sa.index && sa.pinky && !sa.middle && !sa.ring &&
+                   sb.thumb && sb.index && sb.pinky && !sb.middle && !sb.ring) {
+            cls = { key: "i_love_you", confidence: 0.96 };
+          }
+          // Two flat palms moving from chin outward → Thank you (palms open, both visible)
+          else if (sa && sb && sa.count >= 4 && sb.count >= 4 && palmDist > 0.25 && palmDist < 0.55) {
+            cls = { key: "thank_you", confidence: 0.86 };
+          }
+          // Closed fist on flat palm (Help): one fist + one open palm close
+          else if (sa && sb &&
+                   ((sa.count <= 1 && sb.count >= 4) || (sb.count <= 1 && sa.count >= 4)) &&
+                   palmDist < 0.22) {
+            cls = { key: "help", confidence: 0.9 };
+          }
+          // Both fists circling on chest → Sorry (A-hand)
+          else if (sa && sb && sa.count === 0 && sb.count === 0 && wristDist > 0.12 && wristDist < 0.4) {
+            cls = { key: "sorry", confidence: 0.84 };
+          }
+          // Index fingers pointing toward each other near torso → Pain
+          else if (sa && sb && sa.count === 1 && sb.count === 1 && sa.index && sb.index && palmDist < 0.2) {
+            cls = { key: "pain", confidence: 0.86 };
           }
         }
         // Fall back to per-hand classification, pick highest confidence
@@ -136,11 +216,14 @@ export function useMediaPipeHands({ onSign } = {}) {
             candidates.sort((a, b) => b.confidence - a.confidence);
             cls = { ...candidates[0], hands: lmList.length };
           }
+        } else {
+          cls.hands = 2;
         }
 
         setDetection(cls);
         const now = Date.now();
-        if (cls && (cls.key !== lastEmitRef.current.key || now - lastEmitRef.current.at > 1800)) {
+        // 2-second dedupe window for the same gesture
+        if (cls && (cls.key !== lastEmitRef.current.key || now - lastEmitRef.current.at > 2000)) {
           lastEmitRef.current = { key: cls.key, at: now };
           onSign && onSign(cls);
         }

@@ -76,6 +76,7 @@ export default function StudioPage() {
   const audioRef = useRef(null);
   const [autoSpeak, setAutoSpeak] = useState(true);
   const phrasesRef = useRef([]);
+  const lastSpokenRef = useRef({ key: null, at: 0 });
 
   const handleSpeechFinal = useCallback(async (final) => {
     if (!final) return;
@@ -117,7 +118,14 @@ export default function StudioPage() {
     const phrase = phrasesRef.current.find((p) => p.key === cls.key);
     const label = phrase?.label || cls.key.replace(/_/g, " ");
     toast.success(`Detected: ${label}`, { duration: 1400 });
-    if (autoSpeak) speakImmediate(label);
+    if (autoSpeak) {
+      const now = Date.now();
+      // 2-second dedupe: same phrase won't be spoken again within 2s
+      if (lastSpokenRef.current.key !== cls.key || now - lastSpokenRef.current.at > 2000) {
+        lastSpokenRef.current = { key: cls.key, at: now };
+        speakImmediate(label);
+      }
+    }
   }, [autoSpeak, speakImmediate]);
 
   const cam = useMediaPipeHands({ onSign: handleSignDetected });
