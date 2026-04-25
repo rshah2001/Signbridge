@@ -87,37 +87,62 @@ export function useMediaPipeHands({ onSign } = {}) {
         locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`,
       });
       hands.setOptions({
-        maxNumHands: 1,
+        maxNumHands: 2,
         modelComplexity: 1,
         minDetectionConfidence: 0.6,
         minTrackingConfidence: 0.5,
       });
       hands.onResults((results) => {
         const canvas = canvasRef.current;
+        const lmList = results.multiHandLandmarks || [];
         if (canvas) {
           const ctx = canvas.getContext("2d");
           canvas.width = results.image.width;
           canvas.height = results.image.height;
           ctx.save();
           ctx.clearRect(0, 0, canvas.width, canvas.height);
-          if (results.multiHandLandmarks?.length) {
-            for (const lm of results.multiHandLandmarks) {
-              drawConnectors(ctx, lm, HAND_CONNECTIONS, { color: "#2E5A44", lineWidth: 3 });
-              drawLandmarks(ctx, lm, { color: "#B34D41", lineWidth: 1, radius: 3 });
-            }
-          }
+          // Draw each detected hand (up to 2)
+          lmList.forEach((lm, idx) => {
+            const color = idx === 0 ? "#2E5A44" : "#B34D41";
+            drawConnectors(ctx, lm, HAND_CONNECTIONS, { color, lineWidth: 3 });
+            drawLandmarks(ctx, lm, { color: idx === 0 ? "#B34D41" : "#2E5A44", lineWidth: 1, radius: 3 });
+          });
           ctx.restore();
         }
-        if (results.multiHandLandmarks?.length) {
-          const cls = classify(results.multiHandLandmarks[0]);
-          setDetection(cls);
-          const now = Date.now();
-          if (cls && (cls.key !== lastEmitRef.current.key || now - lastEmitRef.current.at > 1800)) {
-            lastEmitRef.current = { key: cls.key, at: now };
-            onSign && onSign(cls);
-          }
-        } else {
+
+        if (lmList.length === 0) {
           setDetection(null);
+          return;
+        }
+
+        // Two-hand specific signs (e.g., overlapping flat palms)
+        let cls = null;
+        if (lmList.length === 2) {
+          // Distance between wrists (landmark 0)
+          const w0 = lmList[0][0];
+          const w1 = lmList[1][0];
+          const dist = Math.hypot(w0.x - w1.x, w0.y - w1.y);
+          if (dist < 0.18) {
+            cls = { key: "stop", confidence: 0.9 }; // both hands close together = stop
+          } else if (dist < 0.35) {
+            // both hands in frame, slightly apart → "thank you"-like gesture
+            cls = { key: "thank_you", confidence: 0.85 };
+          }
+        }
+        // Fall back to per-hand classification, pick highest confidence
+        if (!cls) {
+          const candidates = lmList.map((h) => classify(h)).filter(Boolean);
+          if (candidates.length) {
+            candidates.sort((a, b) => b.confidence - a.confidence);
+            cls = { ...candidates[0], hands: lmList.length };
+          }
+        }
+
+        setDetection(cls);
+        const now = Date.now();
+        if (cls && (cls.key !== lastEmitRef.current.key || now - lastEmitRef.current.at > 1800)) {
+          lastEmitRef.current = { key: cls.key, at: now };
+          onSign && onSign(cls);
         }
       });
       handsRef.current = hands;

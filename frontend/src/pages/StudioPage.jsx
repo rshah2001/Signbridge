@@ -74,6 +74,8 @@ export default function StudioPage() {
   const [s2vLoading, setS2vLoading] = useState(false);
   const [audioUrl, setAudioUrl] = useState(null);
   const audioRef = useRef(null);
+  const [autoSpeak, setAutoSpeak] = useState(true);
+  const phrasesRef = useRef([]);
 
   const handleSpeechFinal = useCallback(async (final) => {
     if (!final) return;
@@ -81,6 +83,25 @@ export default function StudioPage() {
   }, []); // eslint-disable-line
 
   const speech = useSpeechRecognition({ onFinal: handleSpeechFinal });
+
+  const speakImmediate = useCallback((text) => {
+    // Try ElevenLabs first; fall back to browser SpeechSynthesis instantly
+    speakTTS(text)
+      .then((blob) => {
+        const url = URL.createObjectURL(blob);
+        setAudioUrl(url);
+        setTimeout(() => audioRef.current?.play().catch(() => {}), 30);
+      })
+      .catch(() => {
+        try {
+          window.speechSynthesis.cancel();
+          const u = new SpeechSynthesisUtterance(text);
+          u.rate = 1.05;
+          u.pitch = 1.0;
+          window.speechSynthesis.speak(u);
+        } catch { /* noop */ }
+      });
+  }, []);
 
   const handleSignDetected = useCallback((cls) => {
     setPendingSigns((prev) => {
@@ -93,8 +114,11 @@ export default function StudioPage() {
       confidence: cls.confidence,
       source: "mediapipe",
     }).catch(() => {});
-    toast.success(`Detected: ${cls.key.replace(/_/g, " ")}`, { duration: 1400 });
-  }, []);
+    const phrase = phrasesRef.current.find((p) => p.key === cls.key);
+    const label = phrase?.label || cls.key.replace(/_/g, " ");
+    toast.success(`Detected: ${label}`, { duration: 1400 });
+    if (autoSpeak) speakImmediate(label);
+  }, [autoSpeak, speakImmediate]);
 
   const cam = useMediaPipeHands({ onSign: handleSignDetected });
 
@@ -108,6 +132,7 @@ export default function StudioPage() {
           createConversation({ title: "Live demo" }),
         ]);
         setPhrases(p);
+        phrasesRef.current = p;
         setConvo(c);
         convoIdRef.current = c.id;
       } catch (e) {
@@ -313,11 +338,22 @@ export default function StudioPage() {
               </div>
               <div className="font-display text-lg">Sign or tap</div>
             </div>
-            {cam.running && (
-              <span className="inline-flex items-center gap-2 rounded-full bg-[#2E5A44]/10 px-3 py-1 text-xs font-medium text-[#2E5A44]">
-                <span className="dot-led bg-[#2E5A44] animate-pulse" /> tracking
-              </span>
-            )}
+            <div className="flex items-center gap-2">
+              <label className="flex cursor-pointer items-center gap-2 rounded-full border border-[#DCD5C9] bg-white px-3 py-1.5 text-xs font-medium text-[#1F2421]" data-testid="auto-speak-toggle">
+                <input
+                  type="checkbox"
+                  checked={autoSpeak}
+                  onChange={(e) => setAutoSpeak(e.target.checked)}
+                  className="h-3.5 w-3.5 accent-[#2E5A44]"
+                />
+                Auto-speak
+              </label>
+              {cam.running && (
+                <span className="inline-flex items-center gap-2 rounded-full bg-[#2E5A44]/10 px-3 py-1 text-xs font-medium text-[#2E5A44]">
+                  <span className="dot-led bg-[#2E5A44] animate-pulse" /> tracking
+                </span>
+              )}
+            </div>
           </div>
 
           {/* Camera */}
@@ -343,6 +379,7 @@ export default function StudioPage() {
             {cam.detection && cam.running && (
               <div className="absolute right-3 top-3 rounded-full bg-[#2E5A44] px-3 py-1 font-mono-ui text-xs text-white">
                 {cam.detection.key} · {Math.round(cam.detection.confidence * 100)}%
+                {cam.detection.hands ? ` · ${cam.detection.hands}H` : ""}
               </div>
             )}
           </div>
