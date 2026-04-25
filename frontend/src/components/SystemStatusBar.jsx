@@ -2,7 +2,7 @@ import { AlertTriangle, AudioLines, BrainCircuit, Database, RefreshCcw, Server }
 import { useAppHealth } from "../context/AppHealthContext";
 
 const serviceMeta = {
-  database: { label: "MongoDB", icon: Database },
+  database: { label: "Local Store", icon: Database },
   llm: { label: "Gemini", icon: BrainCircuit },
   tts: { label: "Voice", icon: AudioLines },
 };

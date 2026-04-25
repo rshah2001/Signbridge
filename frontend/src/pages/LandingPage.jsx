@@ -25,8 +25,8 @@ export default function LandingPage() {
             </h1>
             <p className="mt-6 max-w-xl text-base leading-relaxed text-[#1F2421]/80">
               SignBridge AI translates speech into sign language and signs back into natural voice — instantly,
-              in any clinic, classroom, or conversation. Powered by Gemini, ElevenLabs, MediaPipe, MongoDB and
-              Snowflake-style accessibility intelligence.
+              in any clinic, classroom, or conversation. Powered by Gemini, ElevenLabs, MediaPipe, and local
+              laptop storage for a simpler setup.
             </p>
             <div className="mt-8 flex flex-wrap items-center gap-3">
               <Link

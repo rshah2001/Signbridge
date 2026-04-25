@@ -56,12 +56,18 @@ const canonicalAsset = (fragment) => {
 
 const preprocessWords = (text) => {
   const tokens = tokenize(text);
-  if (!tokens.length) return ["Help"];
+  if (!tokens.length) return [];
 
   const lowered = tokens.map(normalizeWord);
   const result = [];
 
-  const hasPast = lowered.some((word) => word === "was" || word === "were" || word === "did" || word === "had" || word.endsWith("ed"));
+  const hasPast = lowered.some((word) =>
+    word === "was"
+    || word === "were"
+    || word === "did"
+    || word === "had"
+    || (/^[a-z]{4,}ed$/.test(word) && !word.endsWith("eed")),
+  );
   const hasFuture = lowered.includes("will");
   const hasContinuous = lowered.some((word) => word.endsWith("ing"));
 
@@ -79,11 +85,12 @@ const preprocessWords = (text) => {
     }
   }
 
-  return result.length ? result : ["Help"];
+  return result.length ? result : lowered;
 };
 
 export function buildPlaybackSequence(text) {
   const words = preprocessWords(text);
+  if (!words.length) return [];
   const items = [];
 
   for (let index = 0; index < words.length; index += 1) {

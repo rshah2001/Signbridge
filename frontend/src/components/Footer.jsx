@@ -5,7 +5,7 @@ export const Footer = () => (
         SignBridge AI · Communication without barriers
       </div>
       <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-xs uppercase tracking-[0.2em] text-[#5C6B62]">
-        <span>Gemini · ElevenLabs · MediaPipe · Snowflake · MongoDB</span>
+        <span>Gemini · ElevenLabs · MediaPipe · Local Storage</span>
         <span className="font-mono-ui text-[#2E5A44]">v0.1 demo</span>
       </div>
     </div>

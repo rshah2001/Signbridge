@@ -84,15 +84,15 @@ const playbackItemForToken = (token, phraseMap) => phraseMap[token] || {
 };
 
 /* ---------------- Sign output center: sequential clip playback ------------- */
-const SignReveal = ({ tokens, phrases, simplified }) => {
+const SignReveal = ({ tokens, phrases, simplified, sourceText }) => {
   const phraseMap = useMemo(() => Object.fromEntries(phrases.map((p) => [p.key, p])), [phrases]);
   const playbackItems = useMemo(
     () => {
-      const byAsset = buildPlaybackSequence(simplified);
+      const byAsset = buildPlaybackSequence(sourceText || simplified);
       if (byAsset.length) return byAsset;
       return tokens.map((token) => playbackItemForToken(token, phraseMap));
     },
-    [phraseMap, simplified, tokens],
+    [phraseMap, simplified, sourceText, tokens],
   );
   const [currentIndex, setCurrentIndex] = useState(0);
   const [isPlaying, setIsPlaying] = useState(true);
@@ -263,6 +263,7 @@ export default function StudioPage() {
   const [v2sLoading, setV2sLoading] = useState(false);
   const [v2sTokens, setV2sTokens] = useState([]);
   const [v2sSimplified, setV2sSimplified] = useState("");
+  const [v2sSourceText, setV2sSourceText] = useState("");
   const [textInput, setTextInput] = useState("");
 
   // sign → voice state
@@ -382,6 +383,7 @@ export default function StudioPage() {
       const out = await voiceToSign(text);
       setV2sTokens(out.sign_tokens);
       setV2sSimplified(out.simplified);
+      setV2sSourceText(out.original || text);
       await addMessage(convoIdRef.current, {
         speaker: "hearing",
         direction: "voice_to_sign",
@@ -600,7 +602,7 @@ export default function StudioPage() {
 
         {/* SIGN OUTPUT CENTER */}
         <section className="clay-card rounded-2xl p-5 lg:col-span-4" data-testid="sign-output-panel">
-          <SignReveal tokens={v2sTokens} phrases={phrases} simplified={v2sSimplified} />
+          <SignReveal tokens={v2sTokens} phrases={phrases} simplified={v2sSimplified} sourceText={v2sSourceText} />
         </section>
 
         {/* DEAF PANE */}

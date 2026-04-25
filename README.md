@@ -1,20 +1,20 @@
 # SignBridge AI
 
-SignBridge AI is a two-way accessibility app for conversations between hearing and deaf users. It combines speech recognition, sign-supported phrase workflows, voice playback, MongoDB-backed session history, and analytics that highlight urgent communication needs.
+SignBridge AI is a two-way accessibility app for conversations between hearing and deaf users. It combines speech recognition, sign-supported phrase workflows, voice playback, local laptop-backed session history, and analytics that highlight urgent communication needs.
 
 ## What It Does
 
 - Hearing user speaks or types and gets sign-friendly output.
 - Deaf user signs with camera-assisted detection or taps phrase cards and gets spoken output.
 - Emergency phrases like `Help`, `Doctor`, `Pain`, and `Emergency` are elevated in the Studio workflow.
-- MongoDB stores conversations, messages, feedback, and detection events.
+- Local storage on your laptop keeps conversations, messages, feedback, and detection events.
 - Analytics summarize confidence trends, emergency activity, and communication gaps.
 
 ## Stack
 
 - Frontend: React 19, CRACO, Tailwind CSS, Recharts
-- Backend: FastAPI, Motor, httpx
-- Database: MongoDB
+- Backend: FastAPI, httpx
+- Storage: Local JSON file on your laptop
 - AI/TTS: Gemini API and ElevenLabs with graceful fallback behavior
 - CV/STT: MediaPipe Hands and Web Speech API in the browser
 
@@ -47,19 +47,16 @@ SignBridge AI is a two-way accessibility app for conversations between hearing a
 
 The frontend will use `REACT_APP_BACKEND_URL` when provided. In local development it defaults to `http://127.0.0.1:8000`.
 
-## Production Notes
+## Runtime Notes
 
-- MongoDB is the primary backend. If MongoDB is unavailable, the API degrades into an in-memory mode so the demo can still function.
-- `GET /api/health` reports backend, database, AI, and voice-service readiness.
-- The frontend is currently deployed on Vercel.
-- The backend should be deployed separately with real environment variables and a managed MongoDB instance.
+- The backend now stores data locally in `backend/data/signbridge-local.json`.
+- `GET /api/health` reports local storage, AI, and voice-service readiness.
+- This setup is ideal for running the full app directly on your laptop without MongoDB.
 
 ## Recommended Environment Variables
 
 Backend:
 
-- `MONGO_URL`
-- `DB_NAME`
 - `GEMINI_API_KEY` or `GOOGLE_API_KEY`
 - `ELEVENLABS_API_KEY`
 - `CORS_ORIGINS`
@@ -81,7 +78,6 @@ Backend:
 
 ## Next Priorities
 
-- Deploy the FastAPI backend against a production MongoDB instance.
 - Expand sign and phrase coverage beyond the MVP catalog.
 - Improve gesture classification quality beyond heuristics.
 - Add authentication and saved user workspaces if the product becomes multi-user.

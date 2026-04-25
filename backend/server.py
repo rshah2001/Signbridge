@@ -1,12 +1,13 @@
 """SignBridge AI - FastAPI backend.
 
 Provides translation endpoints (Gemini-powered), ElevenLabs TTS proxy,
-conversation/message persistence in MongoDB, and a Snowflake-style
-analytics layer computed from MongoDB aggregations.
+and local laptop-backed persistence for conversations, detections,
+feedback, and analytics.
 """
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -21,7 +22,6 @@ import httpx
 from dotenv import load_dotenv
 from fastapi import APIRouter, FastAPI, HTTPException
 from fastapi.responses import Response
-from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, ConfigDict
 from starlette.middleware.cors import CORSMiddleware
 
@@ -31,9 +31,8 @@ load_dotenv(ROOT_DIR / ".env")
 # ---------------------------------------------------------------------------
 # Bootstrapping
 # ---------------------------------------------------------------------------
-mongo_url = os.environ.get("MONGO_URL", "mongodb://localhost:27017")
-client = AsyncIOMotorClient(mongo_url, serverSelectionTimeoutMS=2000)
-db = client[os.environ.get("DB_NAME", "signbridge")]
+LOCAL_DATA_DIR = ROOT_DIR / "data"
+LOCAL_STORE_PATH = LOCAL_DATA_DIR / "signbridge-local.json"
 
 GEMINI_API_KEY = (
     os.environ.get("GEMINI_API_KEY", "")
@@ -72,32 +71,48 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _use_memory_store() -> bool:
-    return bool(getattr(app.state, "use_memory_store", False))
+def _default_store() -> Dict[str, Any]:
+    return {
+        "phrase_mappings": [],
+        "conversations": [],
+        "messages": [],
+        "detected_signs": [],
+        "feedback_corrections": [],
+    }
 
 
-async def _check_mongo() -> tuple[bool, Optional[str]]:
+def _ensure_local_data_dir() -> None:
+    LOCAL_DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _load_local_store() -> None:
+    _ensure_local_data_dir()
+    if not LOCAL_STORE_PATH.exists():
+        return
     try:
-        await client.admin.command("ping")
-        return True, None
-    except Exception as exc:  # pragma: no cover - network
-        return False, str(exc)
+        payload = json.loads(LOCAL_STORE_PATH.read_text())
+        for key, fallback in _default_store().items():
+            memory_store[key] = payload.get(key, fallback)
+    except Exception as exc:  # pragma: no cover - corrupt local file
+        logger.warning("Failed to read local store %s: %s", LOCAL_STORE_PATH, exc)
+
+
+def _save_local_store() -> None:
+    _ensure_local_data_dir()
+    LOCAL_STORE_PATH.write_text(json.dumps(memory_store, indent=2))
 
 
 async def refresh_service_status() -> Dict[str, Any]:
-    mongo_ok, mongo_error = await _check_mongo()
-    force_memory = os.environ.get("SIGNBRIDGE_USE_MEMORY_STORE", "").lower() in {"1", "true", "yes"}
-    app.state.use_memory_store = force_memory or not mongo_ok
     status = {
         "app": "SignBridge AI",
-        "status": "degraded" if app.state.use_memory_store else "ok",
-        "mode": "memory" if app.state.use_memory_store else "mongo",
+        "status": "ok",
+        "mode": "local",
         "services": {
             "database": {
-                "ok": mongo_ok and not app.state.use_memory_store,
-                "mode": "memory" if app.state.use_memory_store else "mongo",
-                "detail": "Using in-memory fallback store." if app.state.use_memory_store else "MongoDB connected.",
-                "error": None if mongo_ok else mongo_error,
+                "ok": True,
+                "mode": "local",
+                "detail": f"Using local laptop storage at {LOCAL_STORE_PATH}.",
+                "error": None,
             },
             "llm": {
                 "ok": bool(GEMINI_API_KEY),
@@ -119,9 +134,7 @@ def _memory_collection(name: str) -> List[Dict[str, Any]]:
 
 
 async def _count_documents(name: str) -> int:
-    if _use_memory_store():
-        return len(_memory_collection(name))
-    return await getattr(db, name).count_documents({})
+    return len(_memory_collection(name))
 
 
 # ---------------------------------------------------------------------------
@@ -208,32 +221,24 @@ async def seed_phrases() -> None:
     docs = [{**p, "id": str(uuid.uuid4()), "created_at": _now()} for p in PHRASE_CATALOG]
     catalog_keys = {p["key"] for p in PHRASE_CATALOG}
 
-    if _use_memory_store():
-        existing_keys = {d.get("key") for d in memory_store["phrase_mappings"]}
-        if existing_keys == catalog_keys:
-            return
-        memory_store["phrase_mappings"] = docs
-        logger.info("Seeded %d phrase mappings into memory store", len(docs))
-        return
-
-    existing_keys = {d.get("key") async for d in db.phrase_mappings.find({}, {"_id": 0, "key": 1})}
+    existing_keys = {d.get("key") for d in memory_store["phrase_mappings"]}
     if existing_keys == catalog_keys:
         return
-    await db.phrase_mappings.delete_many({})
-    await db.phrase_mappings.insert_many(docs)
-    logger.info("Seeded %d phrase mappings into MongoDB", len(docs))
+    memory_store["phrase_mappings"] = docs
+    _save_local_store()
+    logger.info("Seeded %d phrase mappings into local store", len(docs))
 
 
 @app.on_event("startup")
 async def on_startup() -> None:
+    _load_local_store()
     await refresh_service_status()
     await seed_phrases()
 
 
 @app.on_event("shutdown")
 async def on_shutdown() -> None:
-    if not _use_memory_store():
-        client.close()
+    _save_local_store()
 
 
 # ---------------------------------------------------------------------------
@@ -387,12 +392,16 @@ def _catalog_lookup(fragment: str) -> Optional[Dict[str, Any]]:
 def _prepare_sign_playback_text(text: str) -> str:
     words = re.findall(r"[A-Za-z0-9']+", text)
     if not words:
-        return "help"
+        return ""
 
     lowered = [word.lower() for word in words]
     prepared: List[str] = []
 
-    has_past = any(word in {"was", "were", "did", "had"} or word.endswith("ed") for word in lowered)
+    has_past = any(
+        word in {"was", "were", "did", "had"}
+        or (re.fullmatch(r"[a-z]{4,}ed", word) and not word.endswith("eed"))
+        for word in lowered
+    )
     has_future = "will" in lowered or ("going" in lowered and "to" in lowered)
     has_present_continuous = any(word.endswith("ing") for word in lowered)
 
@@ -410,7 +419,7 @@ def _prepare_sign_playback_text(text: str) -> str:
             continue
         prepared.append(candidate)
 
-    return " ".join(prepared[:12]) or "help"
+    return " ".join(prepared[:12]) or " ".join(lowered[:12])
 
 
 def _playback_tokens_from_text(text: str) -> List[str]:
@@ -447,61 +456,44 @@ def _playback_tokens_from_text(text: str) -> List[str]:
 
 
 async def list_phrase_docs() -> List[Dict[str, Any]]:
-    if _use_memory_store():
-        return [dict(doc) for doc in memory_store["phrase_mappings"]]
-    return await db.phrase_mappings.find({}, {"_id": 0}).to_list(200)
+    return [dict(doc) for doc in memory_store["phrase_mappings"]]
 
 
 async def create_conversation_doc(convo: Dict[str, Any]) -> None:
-    if _use_memory_store():
-        memory_store["conversations"].append(convo.copy())
-        return
-    await db.conversations.insert_one(convo.copy())
+    memory_store["conversations"].append(convo.copy())
+    _save_local_store()
 
 
 async def list_conversation_docs() -> List[Dict[str, Any]]:
-    if _use_memory_store():
-        return sorted(memory_store["conversations"], key=lambda item: item["created_at"], reverse=True)[:50]
-    return await db.conversations.find({}, {"_id": 0}).sort("created_at", -1).to_list(50)
+    return sorted(memory_store["conversations"], key=lambda item: item["created_at"], reverse=True)[:50]
 
 
 async def get_conversation_doc(convo_id: str) -> Optional[Dict[str, Any]]:
-    if _use_memory_store():
-        return _memory_index("conversations").get(convo_id)
-    return await db.conversations.find_one({"id": convo_id}, {"_id": 0})
+    return _memory_index("conversations").get(convo_id)
 
 
 async def list_message_docs(convo_id: str) -> List[Dict[str, Any]]:
-    if _use_memory_store():
-        return [m for m in memory_store["messages"] if m["conversation_id"] == convo_id]
-    return await db.messages.find({"conversation_id": convo_id}, {"_id": 0}).sort("created_at", 1).to_list(500)
+    return [m for m in memory_store["messages"] if m["conversation_id"] == convo_id]
 
 
 async def create_message_doc(msg: Dict[str, Any]) -> None:
-    if _use_memory_store():
-        memory_store["messages"].append(msg.copy())
-        convo = _memory_index("conversations").get(msg["conversation_id"])
-        if convo:
-            convo["message_count"] = int(convo.get("message_count", 0)) + 1
-        return
-    await db.messages.insert_one(msg.copy())
-    await db.conversations.update_one({"id": msg["conversation_id"]}, {"$inc": {"message_count": 1}})
+    memory_store["messages"].append(msg.copy())
+    convo = _memory_index("conversations").get(msg["conversation_id"])
+    if convo:
+        convo["message_count"] = int(convo.get("message_count", 0)) + 1
+    _save_local_store()
 
 
 async def log_detected_signs(docs: List[Dict[str, Any]]) -> None:
     if not docs:
         return
-    if _use_memory_store():
-        memory_store["detected_signs"].extend(doc.copy() for doc in docs)
-        return
-    await db.detected_signs.insert_many(docs)
+    memory_store["detected_signs"].extend(doc.copy() for doc in docs)
+    _save_local_store()
 
 
 async def save_feedback_doc(doc: Dict[str, Any]) -> None:
-    if _use_memory_store():
-        memory_store["feedback_corrections"].append(doc.copy())
-        return
-    await db.feedback_corrections.insert_one(doc.copy())
+    memory_store["feedback_corrections"].append(doc.copy())
+    _save_local_store()
 
 
 # ---------------------------------------------------------------------------
@@ -681,27 +673,20 @@ async def submit_feedback(payload: FeedbackIn) -> Dict[str, str]:
 # Snowflake-style analytics layer
 # ---------------------------------------------------------------------------
 async def _aggregate_top_phrases() -> List[Dict[str, Any]]:
-    if _use_memory_store():
-        grouped: Dict[str, List[float]] = {}
-        for row in _memory_collection("detected_signs"):
-            grouped.setdefault(row["sign_key"], []).append(float(row.get("confidence") or 0))
-        rows = sorted(grouped.items(), key=lambda item: len(item[1]), reverse=True)[:8]
-        if rows:
-            return [
-                {
-                    "sign_key": key,
-                    "count": len(values),
-                    "avg_conf": round(sum(values) / len(values), 2) if values else 0.0,
-                }
-                for key, values in rows
-            ]
+    grouped: Dict[str, List[float]] = {}
+    for row in _memory_collection("detected_signs"):
+        grouped.setdefault(row["sign_key"], []).append(float(row.get("confidence") or 0))
+    rows = sorted(grouped.items(), key=lambda item: len(item[1]), reverse=True)[:8]
+    if rows:
+        return [
+            {
+                "sign_key": key,
+                "count": len(values),
+                "avg_conf": round(sum(values) / len(values), 2) if values else 0.0,
+            }
+            for key, values in rows
+        ]
 
-    pipeline = [
-        {"$group": {"_id": "$sign_key", "count": {"$sum": 1}, "avg_conf": {"$avg": "$confidence"}}},
-        {"$sort": {"count": -1}},
-        {"$limit": 8},
-    ]
-    rows = await db.detected_signs.aggregate(pipeline).to_list(20)
     if not rows:
         # synthesize demo data so dashboard is never empty
         seeds = [
@@ -711,19 +696,20 @@ async def _aggregate_top_phrases() -> List[Dict[str, Any]]:
         ]
         return [{"sign_key": k, "count": c, "avg_conf": round(a, 2)} for k, c, a in seeds]
     return [
-        {"sign_key": r["_id"], "count": r["count"], "avg_conf": round(r.get("avg_conf") or 0.0, 2)}
-        for r in rows
+        {
+            "sign_key": key,
+            "count": len(values),
+            "avg_conf": round(sum(values) / len(values), 2) if values else 0.0,
+        }
+        for key, values in rows
     ]
 
 
 async def _confidence_timeseries() -> List[Dict[str, Any]]:
-    if _use_memory_store():
-        rows = [
-            {"confidence": row.get("confidence"), "created_at": row.get("created_at")}
-            for row in _memory_collection("detected_signs")
-        ]
-    else:
-        rows = await db.detected_signs.find({}, {"_id": 0, "confidence": 1, "created_at": 1}).to_list(500)
+    rows = [
+        {"confidence": row.get("confidence"), "created_at": row.get("created_at")}
+        for row in _memory_collection("detected_signs")
+    ]
     if not rows:
         # synthesize a 14-day rising curve
         out: List[Dict[str, Any]] = []
@@ -750,10 +736,7 @@ async def _confidence_timeseries() -> List[Dict[str, Any]]:
 
 async def _emergency_trend() -> List[Dict[str, Any]]:
     emergency_keys = {p["key"] for p in PHRASE_CATALOG if p.get("emergency")}
-    if _use_memory_store():
-        rows = list(_memory_collection("detected_signs"))
-    else:
-        rows = await db.detected_signs.find({}, {"_id": 0}).to_list(1000)
+    rows = list(_memory_collection("detected_signs"))
     buckets: Dict[str, int] = {}
     for r in rows:
         if r.get("sign_key") not in emergency_keys:
@@ -801,20 +784,13 @@ async def snowflake_analytics() -> Dict[str, Any]:
         if confidence_series else 0.0
     )
 
-    if _use_memory_store():
-        grouped: Dict[str, int] = {}
-        for row in _memory_collection("feedback_corrections"):
-            grouped[row["sign_key"]] = grouped.get(row["sign_key"], 0) + 1
-        misinterpreted = [
-            {"_id": key, "count": count}
-            for key, count in sorted(grouped.items(), key=lambda item: item[1], reverse=True)[:5]
-        ]
-    else:
-        misinterpreted = await db.feedback_corrections.aggregate([
-            {"$group": {"_id": "$sign_key", "count": {"$sum": 1}}},
-            {"$sort": {"count": -1}},
-            {"$limit": 5},
-        ]).to_list(10)
+    grouped: Dict[str, int] = {}
+    for row in _memory_collection("feedback_corrections"):
+        grouped[row["sign_key"]] = grouped.get(row["sign_key"], 0) + 1
+    misinterpreted = [
+        {"_id": key, "count": count}
+        for key, count in sorted(grouped.items(), key=lambda item: item[1], reverse=True)[:5]
+    ]
     if not misinterpreted:
         misinterpreted = [
             {"_id": "water", "count": 6},
@@ -837,9 +813,9 @@ async def snowflake_analytics() -> Dict[str, Any]:
         "misinterpreted": misinterpreted,
         "accessibility_gaps": gaps,
         "queries_executed": [
-            "SELECT sign_key, COUNT(*) AS uses FROM signs GROUP BY 1 ORDER BY 2 DESC LIMIT 8;",
-            "SELECT day, AVG(confidence) FROM signs GROUP BY day ORDER BY day;",
-            "SELECT day, COUNT(*) FROM signs WHERE category='alert' GROUP BY day;",
+            f"LOCAL FILE STORE: top signs from {LOCAL_STORE_PATH.name}",
+            f"LOCAL FILE STORE: confidence by day from {LOCAL_STORE_PATH.name}",
+            f"LOCAL FILE STORE: emergency detections from {LOCAL_STORE_PATH.name}",
         ],
         "generated_at": _now(),
     }

@@ -14,7 +14,7 @@ export default function AboutPage() {
           <p className="mt-6 text-base leading-relaxed text-[#1F2421]/80">
             SignBridge AI is a hackathon-grade prototype demonstrating end-to-end accessibility infrastructure:
             speech recognition, Gemini sentence simplification, MediaPipe hand-tracking, and ElevenLabs voice
-            synthesis — wired to a MongoDB transcript store and a Snowflake-style analytics layer that helps
+            synthesis — wired to a local transcript store on your laptop and a lightweight analytics layer that helps
             organizations identify where communication breaks down.
           </p>
 
@@ -24,7 +24,7 @@ export default function AboutPage() {
               { icon: Sparkles, name: "Gemini 2.5 Flash", role: "NLP simplify" },
               { icon: Hand, name: "MediaPipe Hands", role: "Gesture detect" },
               { icon: AudioLines, name: "ElevenLabs", role: "Multilingual TTS" },
-              { icon: Database, name: "MongoDB", role: "Transcripts" },
+              { icon: Database, name: "Local Store", role: "Transcripts" },
               { icon: Cloud, name: "Snowflake-style", role: "Analytics" },
             ].map((t) => (
               <div key={t.name} className="rounded-xl border border-[#DCD5C9] bg-white p-4">
@@ -45,7 +45,7 @@ export default function AboutPage() {
   └─ sign tokens → /api/translate/sign-to-voice → /api/tts/speak ──► ElevenLabs
 
 FastAPI (Server)
-  ├─ MongoDB: conversations · messages · detected_signs · feedback
+  ├─ Local JSON store: conversations · messages · detected_signs · feedback
   └─ /api/analytics/snowflake  (top phrases · confidence · emergency trends)`}</pre>
           </div>
         </div>

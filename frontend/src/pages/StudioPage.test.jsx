@@ -15,7 +15,7 @@ jest.mock("../context/AppHealthContext", () => ({
   useAppHealth: () => ({
     health: {
       services: {
-        database: { mode: "mongo" },
+        database: { mode: "local" },
         llm: { ok: false },
         tts: { ok: false },
       },
